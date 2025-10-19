@@ -214,7 +214,7 @@ fn tile_list_from_wave<Wave: WaveBitmask, const BITS: usize>(
 }
 
 /// A bitmask representing all the possible states.
-/// 
+///
 /// For example, `u8` is more performant than `u32` but limits the number of
 /// states to 8.
 pub trait WaveBitmask:
@@ -385,8 +385,10 @@ impl<Wave: WaveBitmask, const BITS: usize> Tileset<Wave, BITS> {
 /// Waves that have many possible states have high entropy, while waves that have less have lower entropy
 pub trait Entropy: Default + Send + Clone {
     type Type: Ord + Clone + Copy + Default + Hash + Send;
-    fn calculate<Wave: WaveBitmask, const BITS: usize>(probabilities: &[f32], wave: Wave)
-    -> Self::Type;
+    fn calculate<Wave: WaveBitmask, const BITS: usize>(
+        probabilities: &[f32],
+        wave: Wave,
+    ) -> Self::Type;
 }
 
 /// Use the shannon entropy calculation where the probablility of the
@@ -440,6 +442,7 @@ struct State<Wave: WaveBitmask, E: Entropy> {
     entropy_to_indices: SetQueue<u32, Reverse<<E as Entropy>::Type>>,
 }
 
+/// The main WFC solver
 #[derive(Clone)]
 pub struct Wfc<Wave: WaveBitmask, E: Entropy, const BITS: usize> {
     tiles: arrayvec::ArrayVec<Tile<Wave>, { BITS }>,
@@ -500,6 +503,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         );
     }
 
+    /// Reset the solver back to the initial state.
     #[inline]
     pub fn reset(&mut self) {
         self.stack.clear();
@@ -511,26 +515,34 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         }
     }
 
+    /// Get the number of tiles
     #[inline]
     pub fn num_tiles(&self) -> usize {
         self.tiles.len()
     }
 
+    /// Get the width of the array
     #[inline]
     pub fn width(&self) -> u32 {
         self.width
     }
 
+    /// Get the height of the array
     #[inline]
     pub fn height(&self) -> u32 {
         self.height
     }
 
+    /// Get the depth of the array
     #[inline]
     pub fn depth(&self) -> u32 {
         self.state.array.len() as u32 / self.width() / self.height()
     }
 
+    /// Select the tile with the lowest entropy (randomly if there are multiples with the lowest entropy)
+    /// and return its index and the state it should be collapsed to.
+    ///
+    /// Doesn't actually change the state at all apart from removing unused sets from `entropy_to_indices`.
     #[inline]
     pub fn select_from_lowest_entropy(&mut self, rng: &mut SmallRng) -> Option<(u32, u8)> {
         self.state
@@ -560,6 +572,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
             })
     }
 
+    /// Like `collapse_all_reset_on_contradiction` but uses rayon for parallelism.
     #[inline]
     pub fn collapse_all_reset_on_contradiction_par(&mut self, mut rng: &mut SmallRng) -> u32 {
         let states: Vec<_> = (0..rayon::current_num_threads())
@@ -599,6 +612,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         total_attempts
     }
 
+    /// Like `collapse_all` but resets the state upon a contradiction. Returns the number of attempts it took.
     #[inline]
     pub fn collapse_all_reset_on_contradiction(&mut self, rng: &mut SmallRng) -> u32 {
         let mut attempts = 1;
@@ -615,6 +629,9 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         attempts
     }
 
+    /// Collapse all tiles until nothing else can be collapsed.
+    ///
+    /// Returns whether this caused a contradiction (e.g. a tile has 0 possible states)
     #[inline]
     pub fn collapse_all(&mut self, rng: &mut SmallRng) -> bool {
         let mut any_contradictions = false;
@@ -627,11 +644,17 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         any_contradictions
     }
 
+    /// Collapse the wave at `index` down to a single state.
+    ///
+    /// Returns whether this caused a contradiction (e.g. a tile has 0 possible states)
     #[inline]
     pub fn collapse(&mut self, index: u32, tile: u8) -> bool {
         self.partial_collapse(index, Wave::one().shl(tile as _))
     }
 
+    /// Partially collapse the wave at `index` down to a smaller wave.
+    ///
+    /// Returns whether this caused a contradiction (e.g. a tile has 0 possible states)
     #[inline]
     pub fn partial_collapse(&mut self, index: u32, remaining_possible_states: Wave) -> bool {
         self.stack.clear();
@@ -702,6 +725,9 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         any_contradictions
     }
 
+    /// Get the collapsed values of the array.
+    ///
+    /// Any non-collapsed or contradictory values are returned as 255.
     #[inline]
     pub fn values(&self) -> Vec<u8> {
         let mut values = vec![0; self.state.array.len()];
@@ -709,6 +735,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         values
     }
 
+    /// Like `values` but takes in a slice instead.
     #[inline]
     pub fn set_values(&self, values: &mut [u8]) {
         self.state
