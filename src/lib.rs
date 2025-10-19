@@ -482,8 +482,8 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     pub fn reset(&mut self) {
         self.stack.clear();
 
-        if !self.initial_state.array.is_empty() {
-            self.state.clone_from(&self.initial_state);
+        if let Some(initial_state) = self.initial_state.as_ref() {
+            self.state.clone_from(initial_state);
         } else {
             self.state = State::new(
                 self.initial_wave(),
