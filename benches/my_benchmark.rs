@@ -5,7 +5,7 @@ use rand::{SeedableRng, rngs::SmallRng};
 fn benchmark_wave_size<Wave: WaveBitmask>(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
 ) {
-    let mut tileset = Tileset::<Wave>::default();
+    let mut tileset = Tileset::<Wave, _>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(0.5);
     let grass = tileset.add(1.0);

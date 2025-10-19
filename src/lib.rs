@@ -181,16 +181,41 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
 pub enum Axis {
-    X = 0,
-    Y = 1,
-    Z = 2,
-    NegX = 3,
-    NegY = 4,
-    NegZ = 5,
+    X,
+    Y,
+    Z,
+    NegX,
+    NegY,
+    NegZ,
 }
 
-impl Axis {
-    pub const ALL: [Self; 6] = [
+fn tile_list_from_wave<Wave: WaveBitmask>(wave: Wave, wave_size: usize, tile_list: &mut Vec<u8>) {
+    tile_list.clear();
+    for i in (0..wave_size).filter(|&i| wave.contains(i)) {
+        tile_list.push(i as _);
+    }
+}
+
+pub trait Direction: Clone + Sized
+where
+    Self: 'static,
+{
+    const ALL: &'static [Self];
+    fn as_index(&self) -> usize;
+    fn apply(
+        &self,
+        x: u32,
+        y: u32,
+        z: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Option<(u32,u32,u32)>;
+    fn opposite(&self) -> Self;
+}
+
+impl Direction for Axis {
+    const ALL: &[Self] = &[
         Self::X,
         Self::Y,
         Self::Z,
@@ -199,7 +224,12 @@ impl Axis {
         Self::NegZ,
     ];
 
-    pub fn opp(&self) -> Axis {
+    #[inline]
+    fn as_index(&self) -> usize {
+        *self as usize
+    }
+
+    fn opposite(&self) -> Self {
         match self {
             Self::X => Self::NegX,
             Self::Y => Self::NegY,
@@ -209,12 +239,28 @@ impl Axis {
             Self::NegZ => Self::Z,
         }
     }
-}
 
-fn tile_list_from_wave<Wave: WaveBitmask>(wave: Wave, wave_size: usize, tile_list: &mut Vec<u8>) {
-    tile_list.clear();
-    for i in (0..wave_size).filter(|&i| wave.contains(i)) {
-        tile_list.push(i as _);
+    #[inline]
+    fn apply(
+        &self,
+        mut x: u32,
+        mut y: u32,
+        mut z: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> Option<(u32,u32,u32)> {
+        match self {
+            Self::X if x < width - 1 => x += 1,
+            Self::Y if y < height - 1 => y += 1,
+            Self::Z if z < depth - 1 => z += 1,
+            Self::NegX if x > 0 => x -= 1,
+            Self::NegY if y > 0 => y -= 1,
+            Self::NegZ if z > 0 => z -= 1,
+            _ => return None,
+        }
+
+        Some((x,y,z))
     }
 }
 
@@ -256,40 +302,57 @@ impl<
 
 // Specifies connections along the 6 axis (+/-, x/y/z)
 #[repr(transparent)]
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 struct Tile<Wave> {
-    connections: [Wave; 6],
+    connections: Vec<Wave>,
 }
 
 impl<Wave: WaveBitmask> Tile<Wave> {
-    fn connect(&mut self, other: usize, axis: Axis) {
-        self.connections[axis as usize] |= Wave::one().shl(other);
+    fn new<D: Direction>() -> Self {
+        Self {
+            connections: vec![Wave::default(); D::ALL.len()],
+        }
+    }
+
+    fn connect<D: Direction>(&mut self, other: usize, dir: &D) {
+        self.connections[dir.as_index()] |= Wave::one().shl(other);
     }
 }
 
 /// Stores tile connections and their probabilities.
-#[derive(Default, Clone)]
-pub struct Tileset<Wave: WaveBitmask> {
+#[derive(Clone)]
+pub struct Tileset<Wave: WaveBitmask, Dir: Direction> {
     tiles: Vec<Tile<Wave>>,
     probabilities: Vec<f32>,
+    _phantom: std::marker::PhantomData<Dir>,
 }
 
-impl<Wave: WaveBitmask> Tileset<Wave> {
+impl<Wave: WaveBitmask, Dir: Direction> Default for Tileset<Wave, Dir> {
+    fn default() -> Self {
+        Self {
+            tiles: Default::default(),
+            probabilities: Default::default(),
+            _phantom: Default::default(),
+        }
+    }
+}
+
+impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
     /// Add a new tine with a given probability.
     #[inline]
     pub fn add(&mut self, probability: f32) -> usize {
         let index = self.tiles.len();
-        self.tiles.push(Tile::default());
+        self.tiles.push(Tile::new::<Dir>());
         self.probabilities.push(probability);
         index
     }
 
     /// Connect up two tiles on a number of axises
     #[inline]
-    pub fn connect(&mut self, from: usize, to: usize, axises: &[Axis]) {
-        for &axis in axises {
+    pub fn connect(&mut self, from: usize, to: usize, axises: &[Dir]) {
+        for axis in axises {
+            self.tiles[to].connect(from, &axis.opposite());
             self.tiles[from].connect(to, axis);
-            self.tiles[to].connect(from, axis.opp());
         }
     }
 
@@ -297,7 +360,7 @@ impl<Wave: WaveBitmask> Tileset<Wave> {
     #[inline]
     pub fn connect_to_all(&mut self, tile: usize) {
         for other in 0..self.tiles.len() {
-            self.connect(tile, other, &Axis::ALL)
+            self.connect(tile, other, Dir::ALL)
         }
     }
 
@@ -313,7 +376,7 @@ impl<Wave: WaveBitmask> Tileset<Wave> {
 
     /// Build a WFC solver from these tiles.
     #[inline]
-    pub fn into_wfc<E: Entropy>(mut self, size: (u32, u32, u32)) -> Wfc<Wave, E> {
+    pub fn into_wfc<E: Entropy>(mut self, size: (u32, u32, u32)) -> Wfc<Wave, Dir, E> {
         self.normalize_probabilities();
 
         let (width, height, depth) = size;
@@ -329,6 +392,7 @@ impl<Wave: WaveBitmask> Tileset<Wave> {
             width,
             height,
             scratch_data: Default::default(),
+            _phantom: self._phantom,
         }
     }
 
@@ -338,7 +402,7 @@ impl<Wave: WaveBitmask> Tileset<Wave> {
         self,
         size: (u32, u32, u32),
         array: &[Wave],
-    ) -> Wfc<Wave, E> {
+    ) -> Wfc<Wave, Dir, E> {
         let mut wfc = self.into_wfc(size);
         wfc.collapse_initial_state(array);
         wfc
@@ -346,7 +410,7 @@ impl<Wave: WaveBitmask> Tileset<Wave> {
 
     /// Similar to `into_wfc` but takes `&self`
     #[inline]
-    pub fn create_wfc<E: Entropy>(&self, size: (u32, u32, u32)) -> Wfc<Wave, E> {
+    pub fn create_wfc<E: Entropy>(&self, size: (u32, u32, u32)) -> Wfc<Wave, Dir, E> {
         self.clone().into_wfc(size)
     }
 
@@ -356,7 +420,7 @@ impl<Wave: WaveBitmask> Tileset<Wave> {
         &self,
         size: (u32, u32, u32),
         array: &[Wave],
-    ) -> Wfc<Wave, E> {
+    ) -> Wfc<Wave, Dir, E> {
         self.clone().into_wfc_with_initial_state(size, array)
     }
 
@@ -448,7 +512,7 @@ struct ScratchData<Wave> {
 
 /// The main WFC solver
 #[derive(Clone)]
-pub struct Wfc<Wave: WaveBitmask, E: Entropy> {
+pub struct Wfc<Wave: WaveBitmask, Dir: Direction, E: Entropy> {
     tiles: Vec<Tile<Wave>>,
     probabilities: Vec<f32>,
     state: State<Wave, E>,
@@ -456,9 +520,10 @@ pub struct Wfc<Wave: WaveBitmask, E: Entropy> {
     width: u32,
     height: u32,
     scratch_data: ScratchData<Wave>,
+    _phantom: std::marker::PhantomData<Dir>,
 }
 
-impl<Wave: WaveBitmask, E: Entropy> Wfc<Wave, E> {
+impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
     /// Get the initial wave value
     #[inline]
     pub fn initial_wave(&self) -> Wave {
@@ -679,20 +744,21 @@ impl<Wave: WaveBitmask, E: Entropy> Wfc<Wave, E> {
         );
         let current_possibilities = &self.scratch_data.tile_list;
 
-        for axis in Axis::ALL {
-            let (mut x, mut y, mut z) = (
+        for axis in Dir::ALL {
+            let (x, y, z) = (
                 index % self.width(),
                 (index / self.width()) % self.height(),
                 index / self.width() / self.height(),
             );
-            match axis {
-                Axis::X if x < self.width() - 1 => x += 1,
-                Axis::Y if y < self.height() - 1 => y += 1,
-                Axis::Z if z < self.depth() - 1 => z += 1,
-                Axis::NegX if x > 0 => x -= 1,
-                Axis::NegY if y > 0 => y -= 1,
-                Axis::NegZ if z > 0 => z -= 1,
-                _ => continue,
+            let Some((x,y,z)) = axis.apply(
+                x,
+                y,
+                z,
+                self.width(),
+                self.height(),
+                self.depth(),
+            ) else {
+                continue;
             };
 
             let index = x + y * self.width() + z * self.width() * self.height();
@@ -700,7 +766,7 @@ impl<Wave: WaveBitmask, E: Entropy> Wfc<Wave, E> {
             let mut valid = Wave::zero();
 
             for &tile in current_possibilities.iter() {
-                valid |= self.tiles[tile as usize].connections[axis as usize];
+                valid |= self.tiles[tile as usize].connections[axis.as_index()];
             }
 
             self.scratch_data.stack.push((index, valid));
@@ -774,7 +840,7 @@ use rand::{SeedableRng, rngs::SmallRng};
 fn normal() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u8>::default();
+    let mut tileset = Tileset::<u8, _>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(0.5);
     let grass = tileset.add(1.0);
@@ -802,10 +868,41 @@ fn normal() {
 }
 
 #[test]
+fn normal_2d() {
+    let mut rng = SmallRng::from_os_rng();
+
+    let mut tileset = Tileset::<u8, _>::default();
+    let sea = tileset.add(1.0);
+    let beach = tileset.add(0.5);
+    let grass = tileset.add(1.0);
+    tileset.connect(sea, sea, &Axis2D::ALL);
+    tileset.connect(sea, beach, &Axis2D::ALL);
+    tileset.connect(beach, beach, &Axis2D::ALL);
+    tileset.connect(beach, grass, &Axis2D::ALL);
+    tileset.connect(grass, grass, &Axis2D::ALL);
+
+    assert_eq!(tileset.tiles[sea].connections, [3; 4]);
+
+    let mut wfc = tileset.into_wfc::<ShannonEntropy>((100, 1000, 1));
+
+    assert!(!wfc.all_collapsed());
+    assert!(!wfc.collapse_all(&mut rng));
+    assert!(
+        wfc.all_collapsed(),
+        "failed to collapse: {:?}",
+        &wfc.state
+            .array
+            .iter()
+            .map(|v| v.count_ones())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn initial_state() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u8>::default();
+    let mut tileset = Tileset::<u8, _>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(1.0);
     let grass = tileset.add(1.0);
@@ -838,10 +935,46 @@ fn initial_state() {
 }
 
 #[test]
+fn initial_state_2d() {
+    let mut rng = SmallRng::from_os_rng();
+
+    let mut tileset = Tileset::<u8, _>::default();
+    let sea = tileset.add(1.0);
+    let beach = tileset.add(1.0);
+    let grass = tileset.add(1.0);
+    tileset.connect(sea, sea, &Axis2D::ALL);
+    tileset.connect(sea, beach, &Axis2D::ALL);
+    tileset.connect(beach, grass, &Axis2D::ALL);
+    tileset.connect(grass, grass, &Axis2D::ALL);
+
+    let mut state = [1 << sea | 1 << beach | 1 << grass; 9];
+    assert_eq!(
+        tileset
+            .create_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
+            .state
+            .array,
+        state
+    );
+    state[4] = 1 << sea;
+    #[rustfmt::skip]
+    let expected = [
+        7,3,7,
+        3,1,3,
+        7,3,7
+    ];
+    let mut wfc = tileset.into_wfc_with_initial_state::<ShannonEntropy>((3, 3, 1), &state);
+    assert_eq!(wfc.state.array, expected);
+    wfc.collapse_all(&mut rng);
+    assert_ne!(wfc.state.array, expected);
+    wfc.reset();
+    assert_eq!(wfc.state.array, expected);
+}
+
+#[test]
 fn verticals() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64>::default();
+    let mut tileset = Tileset::<u64, _>::default();
     let air = tileset.add(1.0);
     let solid = tileset.add(1.0);
     tileset.connect(air, air, &Axis::ALL);
@@ -874,7 +1007,7 @@ fn verticals() {
 fn stairs() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64>::default();
+    let mut tileset = Tileset::<u64, _>::default();
     let empty = tileset.add(0.0);
     let ground = tileset.add(1.0);
     tileset.connect(ground, ground, &[Axis::X, Axis::Y]);
@@ -897,7 +1030,7 @@ fn stairs() {
 fn broken() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64>::default();
+    let mut tileset = Tileset::<u64, _>::default();
 
     let sea = tileset.add(1.0);
     let beach = tileset.add(1.0);
@@ -926,10 +1059,90 @@ fn broken() {
 }
 
 #[test]
+fn broken_2d() {
+    let mut rng = SmallRng::from_os_rng();
+
+    let mut tileset = Tileset::<u64, _>::default();
+
+    let sea = tileset.add(1.0);
+    let beach = tileset.add(1.0);
+    let grass = tileset.add(1.0);
+    tileset.connect(sea, sea, &Axis2D::ALL);
+    tileset.connect(sea, beach, &Axis2D::ALL);
+    //tileset.connect(beach, beach, &Axis2D::ALL);
+    tileset.connect(beach, grass, &Axis2D::ALL);
+    tileset.connect(grass, grass, &Axis2D::ALL);
+
+    assert_eq!(tileset.tiles[sea].connections, [3; 4]);
+
+    // Wait until there's a collapse failure due to beaches not being able to connect to beaches.
+    loop {
+        let mut wfc = tileset.create_wfc::<ShannonEntropy>((10, 10, 1));
+
+        assert!(!wfc.all_collapsed());
+
+        if wfc.collapse_all(&mut rng) {
+            assert!(!wfc.all_collapsed());
+            // Make sure that at least one state has collapsed properly (aka that the error hasn't spread).
+            assert!(wfc.state.array.iter().any(|&v| v.count_ones() == 1));
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum Axis2D {
+    X,
+    Y,
+    NegX,
+    NegY,
+}
+
+#[cfg(test)]
+impl Direction for Axis2D {
+    const ALL: &[Self] = &[Self::X, Self::Y, Self::NegX, Self::NegY];
+
+    fn as_index(&self) -> usize {
+        *self as usize
+    }
+
+    fn opposite(&self) -> Self {
+        match self {
+            Self::X => Self::NegX,
+            Self::Y => Self::NegY,
+            Self::NegX => Self::X,
+            Self::NegY => Self::Y,
+        }
+    }
+
+    #[inline]
+    fn apply(
+        &self,
+        mut x: u32,
+        mut y: u32,
+        z: u32,
+        width: u32,
+        height: u32,
+        _depth: u32,
+    ) -> Option<(u32, u32, u32)> {
+        match self {
+            Self::X if x < width - 1 => x += 1,
+            Self::Y if y < height - 1 => y += 1,
+            Self::NegX if x > 0 => x -= 1,
+            Self::NegY if y > 0 => y -= 1,
+            _ => return None,
+        }
+
+        Some((x,y,z))
+    }
+}
+
+#[test]
 fn pipes() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u16>::default();
+    let mut tileset = Tileset::<u16, _>::default();
 
     let empty = tileset.add(1.0);
     let pipe_x = tileset.add(1.0);
