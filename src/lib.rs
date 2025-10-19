@@ -69,8 +69,8 @@ impl<T: Hash + Eq + Clone + Debug> IndexSet<T> {
         }
     }
 
-    fn get_index(&self, index: usize) -> Option<&T> {
-        self.values.get(index)
+    fn get_index(&self, index: usize) -> &T {
+        &self.values[index]
     }
 
     fn swap_remove(&mut self, value: &T) -> bool {
@@ -120,13 +120,14 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
         self.sets.insert(p, set);
     }
 
-    // I'd prefer to return an Option<Set> here but that needs the
-    // polonius borrow checker to be enabled (-Zpolonius)
-    fn peek<O, F: FnOnce(&IndexSet<T>) -> O>(&mut self, func: F) -> Option<O> {
+    fn pick_from_first_set_at_random(&mut self, rng: &mut SmallRng) -> Option<T> {
         while let Some(p) = self.queue.peek_mut() {
             if let hash_map::Entry::Occupied(set) = self.sets.entry(*p) {
                 if !set.get().is_empty() {
-                    return Some(func(set.into_mut()));
+                    let set = set.into_mut();
+                    let index = rng.random_range(0..set.len());
+                    let value = set.get_index(index);
+                    return Some(value.clone());
                 } else {
                     set.remove();
                 }
@@ -503,31 +504,31 @@ impl<Wave: WaveNum, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
 
     #[inline]
     pub fn find_lowest_entropy(&mut self, rng: &mut SmallRng) -> Option<(u32, u8)> {
-        self.state.entropy_to_indices.peek(|set| {
-            let index = rng.random_range(0..set.len());
-            let index = *set.get_index(index).unwrap();
+        self.state
+            .entropy_to_indices
+            .pick_from_first_set_at_random(rng)
+            .map(|index| {
+                let value = self.state.array[index as usize];
 
-            let value = self.state.array[index as usize];
+                let mut rolling_probability: arrayvec::ArrayVec<_, { BITS }> = Default::default();
 
-            let mut rolling_probability: arrayvec::ArrayVec<_, { BITS }> = Default::default();
+                let list = tile_list_from_wave::<_, BITS>(value);
 
-            let list = tile_list_from_wave::<_, BITS>(value);
+                let mut sum = 0.0;
+                for &tile in &list {
+                    sum += self.probabilities[tile as usize];
+                    rolling_probability.push(OrderedFloat(sum));
+                }
+                let num = rng.random_range(0.0..=rolling_probability.last().unwrap().0);
+                let list_index = match rolling_probability.binary_search(&OrderedFloat(num)) {
+                    Ok(index) => index,
+                    Err(index) => index,
+                };
 
-            let mut sum = 0.0;
-            for &tile in &list {
-                sum += self.probabilities[tile as usize];
-                rolling_probability.push(OrderedFloat(sum));
-            }
-            let num = rng.random_range(0.0..=rolling_probability.last().unwrap().0);
-            let list_index = match rolling_probability.binary_search(&OrderedFloat(num)) {
-                Ok(index) => index,
-                Err(index) => index,
-            };
+                let tile = list[list_index];
 
-            let tile = list[list_index];
-
-            (index, tile)
-        })
+                (index, tile)
+            })
     }
 
     #[inline]
