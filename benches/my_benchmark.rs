@@ -2,10 +2,10 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use hyperwfc::*;
 use rand::{SeedableRng, rngs::SmallRng};
 
-fn benchmark_wave_size<Wave: WaveBitmask, const BITS: usize>(
+fn benchmark_wave_size<Wave: WaveBitmask>(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
 ) {
-    let mut tileset = Tileset::<Wave, BITS>::default();
+    let mut tileset = Tileset::<Wave>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(0.5);
     let grass = tileset.add(1.0);
@@ -19,7 +19,7 @@ fn benchmark_wave_size<Wave: WaveBitmask, const BITS: usize>(
 
     for i in [5, 10, 25, 50, 100, 250, 500, 1000, 2000].iter() {
         group.bench_with_input(
-            BenchmarkId::new(format!("{}_shannon", BITS), i),
+            BenchmarkId::new(format!("{}_shannon", Wave::bits()), i),
             i,
             |b, &i| {
                 b.iter(|| {
@@ -29,7 +29,7 @@ fn benchmark_wave_size<Wave: WaveBitmask, const BITS: usize>(
             },
         );
         group.bench_with_input(
-            BenchmarkId::new(format!("{}_linear", BITS), i),
+            BenchmarkId::new(format!("{}_linear", Wave::bits()), i),
             i,
             |b, &i| {
                 b.iter(|| {
@@ -43,11 +43,11 @@ fn benchmark_wave_size<Wave: WaveBitmask, const BITS: usize>(
 
 fn benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("wfc");
-    benchmark_wave_size::<u8, 8>(&mut group);
-    benchmark_wave_size::<u16, 16>(&mut group);
-    benchmark_wave_size::<u32, 32>(&mut group);
-    benchmark_wave_size::<u64, 64>(&mut group);
-    benchmark_wave_size::<u128, 128>(&mut group);
+    benchmark_wave_size::<u8>(&mut group);
+    benchmark_wave_size::<u16>(&mut group);
+    benchmark_wave_size::<u32>(&mut group);
+    benchmark_wave_size::<u64>(&mut group);
+    benchmark_wave_size::<u128>(&mut group);
 }
 
 criterion_group!(benches, benchmark);
