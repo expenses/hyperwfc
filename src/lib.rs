@@ -185,17 +185,13 @@ impl Axis {
     }
 }
 
-#[inline]
-fn wave_contains<Wave: WaveBitmask>(wave: Wave, i: usize) -> bool {
-    ((wave >> i) & Wave::one()) != Wave::zero()
-}
-
 fn tile_list_from_wave<Wave: WaveBitmask, const BITS: usize>(
-    value: Wave,
+    wave: Wave,
+    wave_size: usize,
 ) -> arrayvec::ArrayVec<u8, { BITS }> {
     let mut tile_list = arrayvec::ArrayVec::new();
 
-    for i in (0..BITS).filter(|&i| wave_contains(value, i)) {
+    for i in (0..wave_size).filter(|&i| wave.contains(i)) {
         tile_list.push(i as _);
     }
 
@@ -215,6 +211,10 @@ pub trait WaveBitmask:
     + Send
     + Sync
 {
+    #[inline]
+    fn contains(self, index: usize) -> bool {
+        ((self >> index) & Self::one()) != Self::zero()
+    }
 }
 
 impl<
@@ -374,7 +374,7 @@ impl<Wave: WaveBitmask, const BITS: usize> Tileset<Wave, BITS> {
 /// Waves that have many possible states have high entropy, while waves that have less have lower entropy
 pub trait Entropy: Default + Send + Clone {
     type Type: Ord + Clone + Copy + Default + Hash + Send;
-    fn calculate<Wave: WaveBitmask, const BITS: usize>(
+    fn calculate<Wave: WaveBitmask>(
         probabilities: &[f32],
         wave: Wave,
     ) -> Self::Type;
@@ -389,18 +389,16 @@ impl Entropy for ShannonEntropy {
     type Type = OrderedFloat<f32>;
 
     #[inline]
-    fn calculate<Wave: WaveBitmask, const BITS: usize>(
+    fn calculate<Wave: WaveBitmask>(
         probabilities: &[f32],
         wave: Wave,
     ) -> Self::Type {
         let mut sum = 0.0;
-        for i in (0..BITS).filter(|&i| wave_contains(wave, i)) {
-            let prob = probabilities[i];
-
-            if prob <= 0.0 {
-                continue;
-            }
-
+        for (_, &prob) in probabilities
+            .iter()
+            .enumerate()
+            .filter(|&(i, prob)| *prob > 0.0 && wave.contains(i))
+        {
             sum -= prob * prob.log2();
         }
         OrderedFloat(sum)
@@ -417,7 +415,7 @@ impl Entropy for LinearEntropy {
     type Type = u8;
 
     #[inline]
-    fn calculate<Wave: WaveBitmask, const BITS: usize>(
+    fn calculate<Wave: WaveBitmask>(
         _probabilities: &[f32],
         wave: Wave,
     ) -> Self::Type {
@@ -484,7 +482,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
         self.state.entropy_to_indices.clear();
         let set = IndexSet::new_from_vec((0..self.state.array.len() as u32).collect());
         self.state.entropy_to_indices.insert_set(
-            Reverse(E::calculate::<Wave, BITS>(
+            Reverse(E::calculate::<Wave>(
                 &self.probabilities,
                 self.initial_wave(),
             )),
@@ -542,7 +540,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
 
                 let mut rolling_probability: arrayvec::ArrayVec<_, { BITS }> = Default::default();
 
-                let list = tile_list_from_wave::<_, BITS>(value);
+                let list = tile_list_from_wave::<_, BITS>(value, self.tiles.len());
 
                 let mut sum = 0.0;
                 for &tile in &list {
@@ -665,7 +663,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
 
             if old.count_ones() > 1 {
                 let _val = self.state.entropy_to_indices.remove(
-                    Reverse(E::calculate::<_, BITS>(&self.probabilities, old)),
+                    Reverse(E::calculate(&self.probabilities, old)),
                     &index,
                 );
                 debug_assert!(_val);
@@ -678,13 +676,13 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
 
             if new.count_ones() > 1 {
                 let _val = self.state.entropy_to_indices.insert(
-                    Reverse(E::calculate::<_, BITS>(&self.probabilities, new)),
+                    Reverse(E::calculate(&self.probabilities, new)),
                     index,
                 );
                 debug_assert!(_val);
             }
 
-            let new_tiles = tile_list_from_wave::<_, BITS>(new);
+            let new_tiles = tile_list_from_wave::<_, BITS>(new, self.tiles.len());
 
             for axis in Axis::ALL {
                 let (mut x, mut y, mut z) = (
