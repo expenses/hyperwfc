@@ -1,6 +1,7 @@
 use fnv::FnvBuildHasher;
 use ordered_float::OrderedFloat;
 use rand::Rng;
+use rand::prelude::IndexedRandom;
 #[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::cmp::Ord;
@@ -43,14 +44,6 @@ impl<T: Hash + Eq + Clone + Debug> IndexSet<T> {
         Self { values, indices }
     }
 
-    fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
     fn insert(&mut self, value: T) -> bool {
         use std::hash::BuildHasher;
         let hasher = FnvBuildHasher::default();
@@ -71,10 +64,6 @@ impl<T: Hash + Eq + Clone + Debug> IndexSet<T> {
             }
             _ => false,
         }
-    }
-
-    fn get_index(&self, index: usize) -> &T {
-        &self.values[index]
     }
 
     fn swap_remove(&mut self, value: &T) -> bool {
@@ -127,19 +116,17 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
     }
 
     fn select_from_first_set_at_random<R: Rng>(&mut self, rng: &mut R) -> Option<T> {
-        while let Some(p) = self.queue.peek_mut() {
-            if let hash_map::Entry::Occupied(set) = self.sets.entry(*p) {
-                if !set.get().is_empty() {
-                    let set = set.into_mut();
-                    let index = rng.random_range(0..set.len());
-                    let value = set.get_index(index);
-                    return Some(value.clone());
+        while let Some(priority) = self.queue.peek_mut() {
+            if let hash_map::Entry::Occupied(occupied_entry) = self.sets.entry(*priority) {
+                let set = occupied_entry.get();
+                if let Some(item) = set.values.choose(rng) {
+                    return Some(item.clone());
                 } else {
-                    set.remove();
+                    occupied_entry.remove();
                 }
             }
 
-            binary_heap::PeekMut::pop(p);
+            binary_heap::PeekMut::pop(priority);
         }
 
         None
