@@ -2,6 +2,9 @@
 name = "hyperwfc"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/expenses/hyperwfc"
+description = "A very, very fast 2D/3D grid Wave Function Collapse solver"
 
 [dependencies]
 arrayvec = "0.7.6"
@@ -9,11 +12,15 @@ fnv = "1.0.7"
 hashbrown = "0.16.0"
 num-traits = "0.2.19"
 ordered-float = "5.1.0"
-rand = { version = "0.9.2", features = ["small_rng"] }
-rayon = "1.11.0"
+rand = { version = "0.9.2", default-features = false }
+rayon = { version = "1.11.0", optional = true }
+
+[features]
+rayon = ["dep:rayon", "rand/small_rng"]
 
 [dev-dependencies]
 criterion = "0.7.0"
+rand = { version = "0.9.2", default-features = false, features = ["small_rng", "os_rng"] }
 
 [[bench]]
 name = "my_benchmark"

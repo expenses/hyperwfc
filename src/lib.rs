@@ -1,12 +1,14 @@
 use fnv::FnvBuildHasher;
 use ordered_float::OrderedFloat;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::Rng;
+#[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::cmp::Ord;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, binary_heap, hash_map};
 use std::fmt::Debug;
 use std::hash::Hash;
+#[cfg(feature = "rayon")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // Custom IndexSet implementation. Mirrors `indexmap::IndexSet`
@@ -124,7 +126,7 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
         self.sets.insert(p, set);
     }
 
-    fn select_from_first_set_at_random(&mut self, rng: &mut SmallRng) -> Option<T> {
+    fn select_from_first_set_at_random<R: Rng>(&mut self, rng: &mut R) -> Option<T> {
         while let Some(p) = self.queue.peek_mut() {
             if let hash_map::Entry::Occupied(set) = self.sets.entry(*p) {
                 if !set.get().is_empty() {
@@ -544,7 +546,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     ///
     /// Doesn't actually change the state at all apart from removing unused sets from `entropy_to_indices`.
     #[inline]
-    pub fn select_from_lowest_entropy(&mut self, rng: &mut SmallRng) -> Option<(u32, u8)> {
+    pub fn select_from_lowest_entropy<R: Rng>(&mut self, rng: &mut R) -> Option<(u32, u8)> {
         self.state
             .entropy_to_indices
             .select_from_first_set_at_random(rng)
@@ -573,8 +575,11 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     }
 
     /// Like `collapse_all_reset_on_contradiction` but uses rayon for parallelism.
+    #[cfg(feature = "rayon")]
     #[inline]
-    pub fn collapse_all_reset_on_contradiction_par(&mut self, mut rng: &mut SmallRng) -> u32 {
+    pub fn collapse_all_reset_on_contradiction_par<R: Rng>(&mut self, mut rng: &mut R) -> u32 {
+        use rand::{SeedableRng, rngs::SmallRng};
+
         let states: Vec<_> = (0..rayon::current_num_threads())
             .map(|_| (self.clone(), SmallRng::from_rng(&mut rng)))
             .collect();
@@ -614,7 +619,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
 
     /// Like `collapse_all` but resets the state upon a contradiction. Returns the number of attempts it took.
     #[inline]
-    pub fn collapse_all_reset_on_contradiction(&mut self, rng: &mut SmallRng) -> u32 {
+    pub fn collapse_all_reset_on_contradiction<R: Rng>(&mut self, rng: &mut R) -> u32 {
         let mut attempts = 1;
         while let Some((index, tile)) = self.select_from_lowest_entropy(rng) {
             if self.collapse(index, tile) {
@@ -633,7 +638,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     ///
     /// Returns whether this caused a contradiction (e.g. a tile has 0 possible states)
     #[inline]
-    pub fn collapse_all(&mut self, rng: &mut SmallRng) -> bool {
+    pub fn collapse_all<R: Rng>(&mut self, rng: &mut R) -> bool {
         let mut any_contradictions = false;
         while let Some((index, tile)) = self.select_from_lowest_entropy(rng) {
             if self.collapse(index, tile) {
@@ -760,6 +765,7 @@ impl<Wave: WaveBitmask, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     }
 }
 
+#[cfg(feature = "rayon")]
 fn find_any_with_early_stop<
     T,
     O: Send,
@@ -774,6 +780,9 @@ fn find_any_with_early_stop<
         func(item, &stop_flag).inspect(|_| stop_flag.store(true, Ordering::Relaxed))
     })
 }
+
+#[cfg(test)]
+use rand::{SeedableRng, rngs::SmallRng};
 
 #[test]
 fn normal() {

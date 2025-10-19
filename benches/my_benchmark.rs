@@ -1,8 +1,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use hyperwfc::*;
 use rand::{SeedableRng, rngs::SmallRng};
-use wfc::*;
 
-fn benchmark_wave_size<Wave: WaveNum, const BITS: usize>(
+fn benchmark_wave_size<Wave: WaveBitmask, const BITS: usize>(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
 ) {
     let mut tileset = Tileset::<Wave, BITS>::default();
