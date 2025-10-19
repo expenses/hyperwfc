@@ -1,5 +1,5 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use rand::{rngs::SmallRng, SeedableRng};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use rand::{SeedableRng, rngs::SmallRng};
 use wfc::*;
 
 fn benchmark_wave_size<Wave: WaveNum, const BITS: usize>(
@@ -15,7 +15,7 @@ fn benchmark_wave_size<Wave: WaveNum, const BITS: usize>(
     tileset.connect(beach, grass, &Axis::ALL);
     tileset.connect(grass, grass, &Axis::ALL);
 
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     for i in [5, 10, 25, 50, 100, 250, 500, 1000, 2000].iter() {
         group.bench_with_input(

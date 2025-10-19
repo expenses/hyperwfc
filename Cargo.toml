@@ -1,19 +1,19 @@
 [package]
 name = "wfc"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 arrayvec = "0.7.6"
 fnv = "1.0.7"
-hashbrown = "0.15.2"
+hashbrown = "0.16.0"
 num-traits = "0.2.19"
-ordered-float = "4.6.0"
-rand = { version = "0.8.5", features = ["small_rng"] }
-rayon = "1.10.0"
+ordered-float = "5.1.0"
+rand = { version = "0.9.2", features = ["small_rng"] }
+rayon = "1.11.0"
 
 [dev-dependencies]
-criterion = "0.5.1"
+criterion = "0.7.0"
 
 [[bench]]
 name = "my_benchmark"

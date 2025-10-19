@@ -1,10 +1,10 @@
 use fnv::FnvBuildHasher;
 use ordered_float::OrderedFloat;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::cmp::Ord;
 use std::cmp::Reverse;
-use std::collections::{binary_heap, hash_map, BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, binary_heap, hash_map};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -219,14 +219,14 @@ pub trait WaveNum:
 }
 
 impl<
-        T: std::ops::BitOrAssign
-            + std::ops::BitAndAssign
-            + Default
-            + num_traits::int::PrimInt
-            + Debug
-            + Send
-            + Sync,
-    > WaveNum for T
+    T: std::ops::BitOrAssign
+        + std::ops::BitAndAssign
+        + Default
+        + num_traits::int::PrimInt
+        + Debug
+        + Send
+        + Sync,
+> WaveNum for T
 {
 }
 
@@ -363,7 +363,7 @@ impl<Wave: WaveNum, const BITS: usize> Tileset<Wave, BITS> {
 pub trait Entropy: Default + Send + Clone {
     type Type: Ord + Clone + Copy + Default + Hash + Send;
     fn calculate<Wave: WaveNum, const BITS: usize>(probabilities: &[f32], wave: Wave)
-        -> Self::Type;
+    -> Self::Type;
 }
 
 #[derive(Clone, Default)]
@@ -503,7 +503,7 @@ impl<Wave: WaveNum, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     #[inline]
     pub fn find_lowest_entropy(&mut self, rng: &mut SmallRng) -> Option<(u32, u8)> {
         self.state.entropy_to_indices.peek(|set| {
-            let index = rng.gen_range(0..set.len());
+            let index = rng.random_range(0..set.len());
             let index = *set.get_index(index).unwrap();
 
             let value = self.state.array[index as usize];
@@ -517,7 +517,7 @@ impl<Wave: WaveNum, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
                 sum += self.probabilities[tile as usize];
                 rolling_probability.push(OrderedFloat(sum));
             }
-            let num = rng.gen_range(0.0..=rolling_probability.last().unwrap().0);
+            let num = rng.random_range(0.0..=rolling_probability.last().unwrap().0);
             let list_index = match rolling_probability.binary_search(&OrderedFloat(num)) {
                 Ok(index) => index,
                 Err(index) => index,
@@ -532,7 +532,7 @@ impl<Wave: WaveNum, E: Entropy, const BITS: usize> Wfc<Wave, E, BITS> {
     #[inline]
     pub fn collapse_all_reset_on_contradiction_par(&mut self, mut rng: &mut SmallRng) -> u32 {
         let states: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| (self.clone(), SmallRng::from_rng(&mut rng).unwrap()))
+            .map(|_| (self.clone(), SmallRng::from_rng(&mut rng)))
             .collect();
 
         let other_attempts = AtomicU32::new(0);
@@ -719,7 +719,7 @@ fn find_any_with_early_stop<
 
 #[test]
 fn normal() {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut tileset = Tileset::<u8, 8>::default();
     let sea = tileset.add(1.0);
@@ -750,7 +750,7 @@ fn normal() {
 
 #[test]
 fn initial_state() {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut tileset = Tileset::<u8, 8>::default();
     let sea = tileset.add(1.0);
@@ -786,7 +786,7 @@ fn initial_state() {
 
 #[test]
 fn verticals() {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut tileset = Tileset::<u64, 64>::default();
     let air = tileset.add(1.0);
@@ -819,7 +819,7 @@ fn verticals() {
 
 #[test]
 fn stairs() {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut tileset = Tileset::<u64, 64>::default();
     let empty = tileset.add(0.0);
@@ -842,7 +842,7 @@ fn stairs() {
 
 #[test]
 fn broken() {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut tileset = Tileset::<u64, 64>::default();
 
@@ -874,7 +874,7 @@ fn broken() {
 
 #[test]
 fn pipes() {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut tileset = Tileset::<u16, 16>::default();
 
