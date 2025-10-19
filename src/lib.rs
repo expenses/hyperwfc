@@ -191,16 +191,17 @@ impl Axis {
     }
 }
 
+#[inline]
+fn wave_contains<Wave: WaveNum>(wave: Wave, i: usize) -> bool {
+    ((wave >> i) & Wave::one()) != Wave::zero()
+}
+
 fn tile_list_from_wave<Wave: WaveNum, const BITS: usize>(
     value: Wave,
 ) -> arrayvec::ArrayVec<u8, { BITS }> {
     let mut tile_list = arrayvec::ArrayVec::new();
 
-    for i in 0..BITS {
-        if ((value >> i) & Wave::one()) == Wave::zero() {
-            continue;
-        }
-
+    for i in (0..BITS).filter(|&i| wave_contains(value, i)) {
         tile_list.push(i as _);
     }
 
@@ -378,8 +379,8 @@ impl Entropy for ShannonEntropy {
         wave: Wave,
     ) -> Self::Type {
         let mut sum = 0.0;
-        for i in tile_list_from_wave::<_, BITS>(wave) {
-            let prob = probabilities[i as usize];
+        for i in (0..BITS).filter(|&i| wave_contains(wave, i)) {
+            let prob = probabilities[i];
 
             if prob <= 0.0 {
                 continue;
