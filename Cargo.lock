@@ -234,6 +234,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperwfc"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "criterion",
+ "fnv",
+ "hashbrown",
+ "num-traits",
+ "ordered-float",
+ "rand",
+ "rayon",
+]
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -622,20 +636,6 @@ checksum = "9367c417a924a74cae129e6a2ae3b47fabb1f8995595ab474029da749a8be120"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "wfc"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "criterion",
- "fnv",
- "hashbrown",
- "num-traits",
- "ordered-float",
- "rand",
- "rayon",
 ]
 
 [[package]]
