@@ -30,12 +30,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5192cca8006f1fd4f7237516f40fa183bb07f8fbdfedaa0036de5ea9b0b45e78"
 
 [[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -237,11 +231,9 @@ dependencies = [
 name = "hyperwfc"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "criterion",
  "fnv",
  "hashbrown",
- "num-traits",
  "ordered-float",
  "rand",
  "rayon",
