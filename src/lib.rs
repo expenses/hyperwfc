@@ -12,6 +12,16 @@ use std::hash::Hash;
 #[cfg(feature = "rayon")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+#[inline]
+fn count_ones(wave: &[u64]) -> u32 {
+    wave.iter().map(|section| section.count_ones()).sum()
+}
+
+#[inline]
+fn wave_contains(wave: &[u64], bit: u8) -> bool {
+    wave[(bit / 64) as usize] >> ((bit % 64) as usize) & 1 != 0
+}
+
 // Custom IndexSet implementation. Mirrors `indexmap::IndexSet`
 // but is a bit faster.
 #[derive(Clone)]
@@ -133,17 +143,18 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
         None
     }
 
-    fn select_from_lowest_entropy<Wave: WaveBitmask, R: Rng>(
+    #[inline]
+    fn select_from_lowest_entropy<R: Rng, const WAVE_SIZE: usize>(
         &mut self,
         rng: &mut R,
-        func: impl Fn(&T) -> Wave,
+        func: impl Fn(&T) -> [u64; WAVE_SIZE],
         probabilities: &[f32],
         tile_list: &mut Vec<u8>,
         prefix_summed_probabilities: &mut Vec<OrderedFloat<f32>>,
     ) -> Option<(T, u8)> {
         self.select_from_first_set_at_random(rng).map(|index| {
             let wave = func(&index);
-            tile_list_from_wave(wave, probabilities.len(), tile_list);
+            tile_list_from_wave(&wave, probabilities.len(), tile_list);
             let potential_states = tile_list;
             prefix_summed_probabilities.clear();
             let mut sum = 0.0;
@@ -189,9 +200,10 @@ pub enum Axis {
     NegZ,
 }
 
-fn tile_list_from_wave<Wave: WaveBitmask>(wave: Wave, wave_size: usize, tile_list: &mut Vec<u8>) {
+#[inline]
+fn tile_list_from_wave(wave: &[u64], wave_size: usize, tile_list: &mut Vec<u8>) {
     tile_list.clear();
-    for i in (0..wave_size).filter(|&i| wave.contains(i)) {
+    for i in (0..wave_size).filter(|&i| wave_contains(wave, i as _)) {
         tile_list.push(i as _);
     }
 }
@@ -210,7 +222,7 @@ where
         width: u32,
         height: u32,
         depth: u32,
-    ) -> Option<(u32,u32,u32)>;
+    ) -> Option<(u32, u32, u32)>;
     fn opposite(&self) -> Self;
 }
 
@@ -249,7 +261,7 @@ impl Direction for Axis {
         width: u32,
         height: u32,
         depth: u32,
-    ) -> Option<(u32,u32,u32)> {
+    ) -> Option<(u32, u32, u32)> {
         match self {
             Self::X if x < width - 1 => x += 1,
             Self::Y if y < height - 1 => y += 1,
@@ -260,74 +272,38 @@ impl Direction for Axis {
             _ => return None,
         }
 
-        Some((x,y,z))
+        Some((x, y, z))
     }
-}
-
-/// A bitmask representing all the possible states.
-///
-/// For example, `u8` is more performant than `u32` but limits the number of
-/// states to 8.
-pub trait WaveBitmask:
-    std::ops::BitOrAssign
-    + std::ops::BitAndAssign
-    + Default
-    + num_traits::int::PrimInt
-    + Debug
-    + Send
-    + Sync
-{
-    #[inline]
-    fn bits() -> usize {
-        std::mem::size_of::<Self>() * 8
-    }
-
-    #[inline]
-    fn contains(self, index: usize) -> bool {
-        ((self >> index) & Self::one()) != Self::zero()
-    }
-}
-
-impl<
-    T: std::ops::BitOrAssign
-        + std::ops::BitAndAssign
-        + Default
-        + num_traits::int::PrimInt
-        + Debug
-        + Send
-        + Sync,
-> WaveBitmask for T
-{
 }
 
 // Specifies connections along the 6 axis (+/-, x/y/z)
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-struct Tile<Wave> {
-    connections: Vec<Wave>,
+struct Tile<const WAVE_SIZE: usize> {
+    connections: Vec<[u64; WAVE_SIZE]>,
 }
 
-impl<Wave: WaveBitmask> Tile<Wave> {
+impl<const WAVE_SIZE: usize> Tile<WAVE_SIZE> {
     fn new<D: Direction>() -> Self {
         Self {
-            connections: vec![Wave::default(); D::ALL.len()],
+            connections: vec![[0; WAVE_SIZE]; D::ALL.len()],
         }
     }
 
     fn connect<D: Direction>(&mut self, other: usize, dir: &D) {
-        self.connections[dir.as_index()] |= Wave::one().shl(other);
+        self.connections[dir.as_index()][other / 64] |= (1 << (other % 64));
     }
 }
 
 /// Stores tile connections and their probabilities.
 #[derive(Clone)]
-pub struct Tileset<Wave: WaveBitmask, Dir: Direction> {
-    tiles: Vec<Tile<Wave>>,
+pub struct Tileset<Dir: Direction, const WAVE_SIZE: usize = 4> {
+    tiles: Vec<Tile<WAVE_SIZE>>,
     probabilities: Vec<f32>,
     _phantom: std::marker::PhantomData<Dir>,
 }
 
-impl<Wave: WaveBitmask, Dir: Direction> Default for Tileset<Wave, Dir> {
+impl<Dir: Direction, const WAVE_SIZE: usize> Default for Tileset<Dir, WAVE_SIZE> {
     fn default() -> Self {
         Self {
             tiles: Default::default(),
@@ -337,7 +313,7 @@ impl<Wave: WaveBitmask, Dir: Direction> Default for Tileset<Wave, Dir> {
     }
 }
 
-impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
+impl<Dir: Direction, const WAVE_SIZE: usize> Tileset<Dir, WAVE_SIZE> {
     /// Add a new tine with a given probability.
     #[inline]
     pub fn add(&mut self, probability: f32) -> usize {
@@ -376,7 +352,7 @@ impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
 
     /// Build a WFC solver from these tiles.
     #[inline]
-    pub fn into_wfc<E: Entropy>(mut self, size: (u32, u32, u32)) -> Wfc<Wave, Dir, E> {
+    pub fn into_wfc<E: Entropy>(mut self, size: (u32, u32, u32)) -> Wfc<Dir, E, WAVE_SIZE> {
         self.normalize_probabilities();
 
         let (width, height, depth) = size;
@@ -401,8 +377,8 @@ impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
     pub fn into_wfc_with_initial_state<E: Entropy>(
         self,
         size: (u32, u32, u32),
-        array: &[Wave],
-    ) -> Wfc<Wave, Dir, E> {
+        array: &[[u64; WAVE_SIZE]],
+    ) -> Wfc<Dir, E, WAVE_SIZE> {
         let mut wfc = self.into_wfc(size);
         wfc.collapse_initial_state(array);
         wfc
@@ -410,7 +386,7 @@ impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
 
     /// Similar to `into_wfc` but takes `&self`
     #[inline]
-    pub fn create_wfc<E: Entropy>(&self, size: (u32, u32, u32)) -> Wfc<Wave, Dir, E> {
+    pub fn create_wfc<E: Entropy>(&self, size: (u32, u32, u32)) -> Wfc<Dir, E, WAVE_SIZE> {
         self.clone().into_wfc(size)
     }
 
@@ -419,8 +395,8 @@ impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
     pub fn create_wfc_with_initial_state<E: Entropy>(
         &self,
         size: (u32, u32, u32),
-        array: &[Wave],
-    ) -> Wfc<Wave, Dir, E> {
+        array: &[[u64; WAVE_SIZE]],
+    ) -> Wfc<Dir, E, WAVE_SIZE> {
         self.clone().into_wfc_with_initial_state(size, array)
     }
 
@@ -432,16 +408,31 @@ impl<Wave: WaveBitmask, Dir: Direction> Tileset<Wave, Dir> {
 
     // Get the initial wave value
     #[inline]
-    pub fn initial_wave(&self) -> Wave {
-        Wave::max_value() >> (Wave::bits() - self.tiles.len())
+    pub fn initial_wave(&self) -> [u64; WAVE_SIZE] {
+        initial_wave(self.tiles.len())
     }
+}
+
+#[inline]
+fn initial_wave<const WAVE_SIZE: usize>(mut len: usize) -> [u64; WAVE_SIZE] {
+    let mut wave = [0; WAVE_SIZE];
+    for section in wave.iter_mut() {
+        if len >= 64 {
+            *section = !0;
+            len -= 64;
+        } else {
+            *section = (!0) >> (64 - len);
+            break;
+        }
+    }
+    wave
 }
 
 /// A method of determining entropy.
 /// Waves that have many possible states have high entropy, while waves that have less have lower entropy
 pub trait Entropy: Default + Send + Clone {
     type Type: Ord + Clone + Copy + Default + Hash + Send;
-    fn calculate<Wave: WaveBitmask>(probabilities: &[f32], wave: Wave) -> Self::Type;
+    fn calculate(probabilities: &[f32], wave: &[u64]) -> Self::Type;
 }
 
 /// Use the shannon entropy calculation where the probablility of the
@@ -453,12 +444,12 @@ impl Entropy for ShannonEntropy {
     type Type = OrderedFloat<f32>;
 
     #[inline]
-    fn calculate<Wave: WaveBitmask>(probabilities: &[f32], wave: Wave) -> Self::Type {
+    fn calculate(probabilities: &[f32], wave: &[u64]) -> Self::Type {
         let mut sum = 0.0;
         for (_, &prob) in probabilities
             .iter()
             .enumerate()
-            .filter(|&(i, prob)| *prob > 0.0 && wave.contains(i))
+            .filter(|&(i, prob)| *prob > 0.0 && wave_contains(wave, i as _))
         {
             sum -= prob * prob.log2();
         }
@@ -476,25 +467,22 @@ impl Entropy for LinearEntropy {
     type Type = u8;
 
     #[inline]
-    fn calculate<Wave: WaveBitmask>(_probabilities: &[f32], wave: Wave) -> Self::Type {
-        wave.count_ones() as _
+    fn calculate(_probabilities: &[f32], wave: &[u64]) -> Self::Type {
+        count_ones(wave) as _
     }
 }
 
 #[derive(Clone, Default)]
-struct State<Wave: WaveBitmask, E: Entropy> {
-    array: Vec<Wave>,
+struct State<E: Entropy, const WAVE_SIZE: usize> {
+    array: Vec<[u64; WAVE_SIZE]>,
     entropy_to_indices: SetQueue<u32, Reverse<<E as Entropy>::Type>>,
 }
 
-impl<Wave: WaveBitmask, E: Entropy> State<Wave, E> {
-    fn new(initial_wave: Wave, size: usize, probabilities: &[f32]) -> Self {
+impl<E: Entropy, const WAVE_SIZE: usize> State<E, WAVE_SIZE> {
+    fn new(initial_wave: [u64; WAVE_SIZE], size: usize, probabilities: &[f32]) -> Self {
         let set = IndexSet::new_from_vec((0..size as u32).collect());
         let mut entropy_to_indices = SetQueue::default();
-        entropy_to_indices.insert_set(
-            Reverse(E::calculate::<Wave>(probabilities, initial_wave)),
-            set,
-        );
+        entropy_to_indices.insert_set(Reverse(E::calculate(probabilities, &initial_wave)), set);
 
         State {
             array: vec![initial_wave; size],
@@ -504,42 +492,42 @@ impl<Wave: WaveBitmask, E: Entropy> State<Wave, E> {
 }
 
 #[derive(Default, Clone)]
-struct ScratchData<Wave> {
-    stack: Vec<(u32, Wave)>,
+struct ScratchData<const WAVE_SIZE: usize> {
+    stack: Vec<(u32, [u64; WAVE_SIZE])>,
     prefix_summed_probabilities: Vec<OrderedFloat<f32>>,
     tile_list: Vec<u8>,
 }
 
 /// The main WFC solver
 #[derive(Clone)]
-pub struct Wfc<Wave: WaveBitmask, Dir: Direction, E: Entropy> {
-    tiles: Vec<Tile<Wave>>,
+pub struct Wfc<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> {
+    tiles: Vec<Tile<WAVE_SIZE>>,
     probabilities: Vec<f32>,
-    state: State<Wave, E>,
-    initial_state: Option<State<Wave, E>>,
+    state: State<E, WAVE_SIZE>,
+    initial_state: Option<State<E, WAVE_SIZE>>,
     width: u32,
     height: u32,
-    scratch_data: ScratchData<Wave>,
+    scratch_data: ScratchData<WAVE_SIZE>,
     _phantom: std::marker::PhantomData<Dir>,
 }
 
-impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
+impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> {
     /// Get the initial wave value
     #[inline]
-    pub fn initial_wave(&self) -> Wave {
-        Wave::max_value() >> (Wave::bits() - self.tiles.len())
+    pub fn initial_wave(&self) -> [u64; WAVE_SIZE] {
+        initial_wave(self.tiles.len())
     }
 
     /// Partially collapse the initial state based on provided input.
     #[inline]
-    fn collapse_initial_state(&mut self, state: &[Wave]) {
+    fn collapse_initial_state(&mut self, state: &[[u64; WAVE_SIZE]]) {
         let initial_wave = self.initial_wave();
 
         let mut any_contradictions = false;
 
         // Collapse all provided less-than-initial-wave states.
         for (i, wave) in state.iter().copied().enumerate() {
-            if wave != initial_wave && wave != Wave::zero() {
+            if wave != initial_wave && wave != [0; WAVE_SIZE] {
                 any_contradictions |= self.partial_collapse(i as u32, wave);
             }
         }
@@ -682,14 +670,20 @@ impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
     /// Returns whether this caused a contradiction (e.g. a tile has 0 possible states)
     #[inline]
     pub fn collapse(&mut self, index: u32, tile: u8) -> bool {
-        self.partial_collapse(index, Wave::one().shl(tile as _))
+        let mut wave = [0; WAVE_SIZE];
+        wave[(tile as usize) / 64] = 1 << (tile as usize % 64);
+        self.partial_collapse(index, wave)
     }
 
     /// Partially collapse the wave at `index` down to a smaller wave.
     ///
     /// Returns whether this caused a contradiction (e.g. a tile has 0 possible states)
     #[inline]
-    pub fn partial_collapse(&mut self, index: u32, remaining_possible_states: Wave) -> bool {
+    pub fn partial_collapse(
+        &mut self,
+        index: u32,
+        remaining_possible_states: [u64; WAVE_SIZE],
+    ) -> bool {
         self.scratch_data.stack.clear();
         self.scratch_data
             .stack
@@ -699,31 +693,36 @@ impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
 
         while let Some((index, remaining_possible_states)) = self.scratch_data.stack.pop() {
             let old = self.state.array[index as usize];
-            self.state.array[index as usize] &= remaining_possible_states;
+            for (array, remaining_possible_states) in self.state.array[index as usize]
+                .iter_mut()
+                .zip(&remaining_possible_states)
+            {
+                *array &= remaining_possible_states;
+            }
             let new = self.state.array[index as usize];
 
             if old == new {
                 continue;
             }
 
-            if old.count_ones() > 1 {
+            if count_ones(&old) > 1 {
                 let _val = self
                     .state
                     .entropy_to_indices
-                    .remove(Reverse(E::calculate(&self.probabilities, old)), &index);
+                    .remove(Reverse(E::calculate(&self.probabilities, &old)), &index);
                 debug_assert!(_val);
             }
 
-            if new == Wave::zero() {
+            if new == [0; WAVE_SIZE] {
                 any_contradictions = true;
                 continue;
             }
 
-            if new.count_ones() > 1 {
+            if count_ones(&new) > 1 {
                 let _val = self
                     .state
                     .entropy_to_indices
-                    .insert(Reverse(E::calculate(&self.probabilities, new)), index);
+                    .insert(Reverse(E::calculate(&self.probabilities, &new)), index);
                 debug_assert!(_val);
             }
 
@@ -736,9 +735,9 @@ impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
     // Intended to be called only inside `partial_collapse`.
     //
     // Given an `updated_wave` at `index`, push all possible new neighbour states onto the stack.
-    fn propagate_updated_wave(&mut self, updated_wave: Wave, index: u32) {
+    fn propagate_updated_wave(&mut self, updated_wave: [u64; WAVE_SIZE], index: u32) {
         tile_list_from_wave(
-            updated_wave,
+            &updated_wave,
             self.tiles.len(),
             &mut self.scratch_data.tile_list,
         );
@@ -750,23 +749,20 @@ impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
                 (index / self.width()) % self.height(),
                 index / self.width() / self.height(),
             );
-            let Some((x,y,z)) = axis.apply(
-                x,
-                y,
-                z,
-                self.width(),
-                self.height(),
-                self.depth(),
-            ) else {
+            let Some((x, y, z)) = axis.apply(x, y, z, self.width(), self.height(), self.depth())
+            else {
                 continue;
             };
 
             let index = x + y * self.width() + z * self.width() * self.height();
 
-            let mut valid = Wave::zero();
+            let mut valid = [0; WAVE_SIZE];
 
             for &tile in current_possibilities.iter() {
-                valid |= self.tiles[tile as usize].connections[axis.as_index()];
+                let v = self.tiles[tile as usize].connections[axis.as_index()];
+                for (valid, v) in valid.iter_mut().zip(&v) {
+                    *valid |= v;
+                }
             }
 
             self.scratch_data.stack.push((index, valid));
@@ -791,8 +787,8 @@ impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
             .iter()
             .zip(values)
             .for_each(|(wave, value)| {
-                *value = if wave.count_ones() == 1 {
-                    wave.trailing_zeros() as u8
+                *value = if count_ones(wave) == 1 {
+                    0 //wave.trailing_zeros() as u8
                 } else {
                     u8::MAX
                 }
@@ -804,7 +800,7 @@ impl<Wave: WaveBitmask, Dir: Direction, E: Entropy> Wfc<Wave, Dir, E> {
         self.state
             .array
             .iter()
-            .all(|&value| value.count_ones() == 1)
+            .all(|&value| count_ones(&value) == 1)
     }
 }
 
@@ -840,7 +836,7 @@ use rand::{SeedableRng, rngs::SmallRng};
 fn normal() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u8, _>::default();
+    let mut tileset = Tileset::<_>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(0.5);
     let grass = tileset.add(1.0);
@@ -850,7 +846,9 @@ fn normal() {
     tileset.connect(beach, grass, &Axis::ALL);
     tileset.connect(grass, grass, &Axis::ALL);
 
-    assert_eq!(tileset.tiles[sea].connections, [3; 6]);
+    let mut v = [0; 4];
+    v[0] = 3;
+    assert_eq!(tileset.tiles[sea].connections, [v; 6]);
 
     let mut wfc = tileset.into_wfc::<ShannonEntropy>((100, 1000, 1));
 
@@ -862,7 +860,7 @@ fn normal() {
         &wfc.state
             .array
             .iter()
-            .map(|v| v.count_ones())
+            .map(|v| count_ones(v))
             .collect::<Vec<_>>()
     );
 }
@@ -871,7 +869,7 @@ fn normal() {
 fn normal_2d() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u8, _>::default();
+    let mut tileset = Tileset::<_>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(0.5);
     let grass = tileset.add(1.0);
@@ -881,7 +879,9 @@ fn normal_2d() {
     tileset.connect(beach, grass, &Axis2D::ALL);
     tileset.connect(grass, grass, &Axis2D::ALL);
 
-    assert_eq!(tileset.tiles[sea].connections, [3; 4]);
+    let mut v = [0; 4];
+    v[0] = 3;
+    assert_eq!(tileset.tiles[sea].connections, [v; 4]);
 
     let mut wfc = tileset.into_wfc::<ShannonEntropy>((100, 1000, 1));
 
@@ -893,7 +893,7 @@ fn normal_2d() {
         &wfc.state
             .array
             .iter()
-            .map(|v| v.count_ones())
+            .map(|v| count_ones(v))
             .collect::<Vec<_>>()
     );
 }
@@ -902,7 +902,7 @@ fn normal_2d() {
 fn initial_state() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u8, _>::default();
+    let mut tileset = Tileset::<_>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(1.0);
     let grass = tileset.add(1.0);
@@ -911,7 +911,9 @@ fn initial_state() {
     tileset.connect(beach, grass, &Axis::ALL);
     tileset.connect(grass, grass, &Axis::ALL);
 
-    let mut state = [1 << sea | 1 << beach | 1 << grass; 9];
+    let mut v = [0; 4];
+    v[0] = 1 << sea | 1 << beach | 1 << grass;
+    let mut state = [v; 9];
     assert_eq!(
         tileset
             .create_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
@@ -919,13 +921,17 @@ fn initial_state() {
             .array,
         state
     );
-    state[4] = 1 << sea;
+    state[4][0] = (1 << sea);
     #[rustfmt::skip]
     let expected = [
         7,3,7,
         3,1,3,
-        7,3,7
-    ];
+        7,3,7,
+        ].map(|v| {
+            let mut a = [0; 4];
+            a[0] = v;
+            a
+        });
     let mut wfc = tileset.into_wfc_with_initial_state::<ShannonEntropy>((3, 3, 1), &state);
     assert_eq!(wfc.state.array, expected);
     wfc.collapse_all(&mut rng);
@@ -938,7 +944,7 @@ fn initial_state() {
 fn initial_state_2d() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u8, _>::default();
+    let mut tileset = Tileset::<_>::default();
     let sea = tileset.add(1.0);
     let beach = tileset.add(1.0);
     let grass = tileset.add(1.0);
@@ -947,7 +953,9 @@ fn initial_state_2d() {
     tileset.connect(beach, grass, &Axis2D::ALL);
     tileset.connect(grass, grass, &Axis2D::ALL);
 
-    let mut state = [1 << sea | 1 << beach | 1 << grass; 9];
+    let mut v = [0; 4];
+    v[0] = 1 << sea | 1 << beach | 1 << grass;
+    let mut state = [v; 9];
     assert_eq!(
         tileset
             .create_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
@@ -955,13 +963,17 @@ fn initial_state_2d() {
             .array,
         state
     );
-    state[4] = 1 << sea;
+    state[4][0] = (1 << sea);
     #[rustfmt::skip]
     let expected = [
         7,3,7,
         3,1,3,
-        7,3,7
-    ];
+        7,3,7,
+        ].map(|v| {
+            let mut a = [0; 4];
+            a[0] = v;
+            a
+        });
     let mut wfc = tileset.into_wfc_with_initial_state::<ShannonEntropy>((3, 3, 1), &state);
     assert_eq!(wfc.state.array, expected);
     wfc.collapse_all(&mut rng);
@@ -974,7 +986,7 @@ fn initial_state_2d() {
 fn verticals() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64, _>::default();
+    let mut tileset = Tileset::<_>::default();
     let air = tileset.add(1.0);
     let solid = tileset.add(1.0);
     tileset.connect(air, air, &Axis::ALL);
@@ -996,7 +1008,7 @@ fn verticals() {
         &wfc.state
             .array
             .iter()
-            .map(|v| v.count_ones())
+            .map(|v| count_ones(v))
             .collect::<Vec<_>>()
     );
     let _v = wfc.values();
@@ -1007,7 +1019,7 @@ fn verticals() {
 fn stairs() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64, _>::default();
+    let mut tileset = Tileset::<_>::default();
     let empty = tileset.add(0.0);
     let ground = tileset.add(1.0);
     tileset.connect(ground, ground, &[Axis::X, Axis::Y]);
@@ -1030,7 +1042,7 @@ fn stairs() {
 fn broken() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64, _>::default();
+    let mut tileset = Tileset::<_>::default();
 
     let sea = tileset.add(1.0);
     let beach = tileset.add(1.0);
@@ -1041,7 +1053,9 @@ fn broken() {
     tileset.connect(beach, grass, &Axis::ALL);
     tileset.connect(grass, grass, &Axis::ALL);
 
-    assert_eq!(tileset.tiles[sea].connections, [3; 6]);
+    let mut v = [0; 4];
+    v[0] = 3;
+    assert_eq!(tileset.tiles[sea].connections, [v; 6]);
 
     // Wait until there's a collapse failure due to beaches not being able to connect to beaches.
     loop {
@@ -1052,7 +1066,7 @@ fn broken() {
         if wfc.collapse_all(&mut rng) {
             assert!(!wfc.all_collapsed());
             // Make sure that at least one state has collapsed properly (aka that the error hasn't spread).
-            assert!(wfc.state.array.iter().any(|&v| v.count_ones() == 1));
+            assert!(wfc.state.array.iter().any(|&v| count_ones(&v) == 1));
             break;
         }
     }
@@ -1062,7 +1076,7 @@ fn broken() {
 fn broken_2d() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u64, _>::default();
+    let mut tileset = Tileset::<_>::default();
 
     let sea = tileset.add(1.0);
     let beach = tileset.add(1.0);
@@ -1073,7 +1087,9 @@ fn broken_2d() {
     tileset.connect(beach, grass, &Axis2D::ALL);
     tileset.connect(grass, grass, &Axis2D::ALL);
 
-    assert_eq!(tileset.tiles[sea].connections, [3; 4]);
+    let mut v = [0; 4];
+    v[0] = 3;
+    assert_eq!(tileset.tiles[sea].connections, [v; 4]);
 
     // Wait until there's a collapse failure due to beaches not being able to connect to beaches.
     loop {
@@ -1084,7 +1100,7 @@ fn broken_2d() {
         if wfc.collapse_all(&mut rng) {
             assert!(!wfc.all_collapsed());
             // Make sure that at least one state has collapsed properly (aka that the error hasn't spread).
-            assert!(wfc.state.array.iter().any(|&v| v.count_ones() == 1));
+            assert!(wfc.state.array.iter().any(|&v| count_ones(&v) == 1));
             break;
         }
     }
@@ -1134,7 +1150,7 @@ impl Direction for Axis2D {
             _ => return None,
         }
 
-        Some((x,y,z))
+        Some((x, y, z))
     }
 }
 
@@ -1142,7 +1158,7 @@ impl Direction for Axis2D {
 fn pipes() {
     let mut rng = SmallRng::from_os_rng();
 
-    let mut tileset = Tileset::<u16, _>::default();
+    let mut tileset = Tileset::<_>::default();
 
     let empty = tileset.add(1.0);
     let pipe_x = tileset.add(1.0);
