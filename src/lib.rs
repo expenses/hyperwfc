@@ -18,6 +18,19 @@ fn count_ones(wave: &[u64]) -> u32 {
 }
 
 #[inline]
+fn trailing_zeros(wave: &[u64]) -> u32 {
+    let mut sum = 0;
+    for section in wave.iter() {
+        let trailing_zeros = section.trailing_zeros();
+        sum += trailing_zeros;
+        if trailing_zeros != 64 {
+            break;
+        }
+    }
+    sum
+}
+
+#[inline]
 fn wave_contains(wave: &[u64], bit: u8) -> bool {
     wave[(bit / 64) as usize] >> ((bit % 64) as usize) & 1 != 0
 }
@@ -388,22 +401,6 @@ impl<Dir: Direction, const WAVE_SIZE: usize> Tileset<Dir, WAVE_SIZE> {
         let mut wfc = self.into_wfc(size);
         wfc.collapse_initial_state(array);
         wfc
-    }
-
-    /// Similar to `into_wfc` but takes `&self`
-    #[inline]
-    pub fn create_wfc<E: Entropy>(&self, size: (u32, u32, u32)) -> Wfc<Dir, E, WAVE_SIZE> {
-        self.clone().into_wfc(size)
-    }
-
-    /// Similar to `into_wfc_with_initial_state` but takes `&self`
-    #[inline]
-    pub fn create_wfc_with_initial_state<E: Entropy>(
-        &self,
-        size: (u32, u32, u32),
-        array: &[[u64; WAVE_SIZE]],
-    ) -> Wfc<Dir, E, WAVE_SIZE> {
-        self.clone().into_wfc_with_initial_state(size, array)
     }
 
     /// Get the total number of tiles.
@@ -794,7 +791,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
             .zip(values)
             .for_each(|(wave, value)| {
                 *value = if count_ones(wave) == 1 {
-                    0 //wave.trailing_zeros() as u8
+                    trailing_zeros(wave) as u8
                 } else {
                     u8::MAX
                 }
@@ -921,8 +918,8 @@ fn initial_state() {
     v[0] = 1 << sea | 1 << beach | 1 << grass;
     let mut state = [v; 9];
     assert_eq!(
-        tileset
-            .create_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
+        tileset.clone()
+            .into_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
             .state
             .array,
         state
@@ -942,8 +939,10 @@ fn initial_state() {
     assert_eq!(wfc.state.array, expected);
     wfc.collapse_all(&mut rng);
     assert_ne!(wfc.state.array, expected);
+    assert_eq!(wfc.values()[4], sea as _);
     wfc.reset();
     assert_eq!(wfc.state.array, expected);
+    
 }
 
 #[test]
@@ -964,7 +963,7 @@ fn initial_state_2d() {
     let mut state = [v; 9];
     assert_eq!(
         tileset
-            .create_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
+            .clone().into_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
             .state
             .array,
         state
@@ -984,6 +983,7 @@ fn initial_state_2d() {
     assert_eq!(wfc.state.array, expected);
     wfc.collapse_all(&mut rng);
     assert_ne!(wfc.state.array, expected);
+    assert_eq!(wfc.values()[4], sea as _);
     wfc.reset();
     assert_eq!(wfc.state.array, expected);
 }
@@ -1065,7 +1065,7 @@ fn broken() {
 
     // Wait until there's a collapse failure due to beaches not being able to connect to beaches.
     loop {
-        let mut wfc = tileset.create_wfc::<ShannonEntropy>((10, 10, 1));
+        let mut wfc = tileset.clone().into_wfc::<ShannonEntropy>((10, 10, 1));
 
         assert!(!wfc.all_collapsed());
 
@@ -1099,7 +1099,7 @@ fn broken_2d() {
 
     // Wait until there's a collapse failure due to beaches not being able to connect to beaches.
     loop {
-        let mut wfc = tileset.create_wfc::<ShannonEntropy>((10, 10, 1));
+        let mut wfc = tileset.clone().into_wfc::<ShannonEntropy>((10, 10, 1));
 
         assert!(!wfc.all_collapsed());
 
