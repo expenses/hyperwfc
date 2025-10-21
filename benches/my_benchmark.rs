@@ -4,6 +4,7 @@ use rand::{SeedableRng, rngs::SmallRng};
 
 fn benchmark_wave_size<Wave: WaveBitmask>(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
+    n: usize,
 ) {
     let mut tileset = Tileset::<Wave, _>::default();
     let sea = tileset.add(1.0);
@@ -14,6 +15,11 @@ fn benchmark_wave_size<Wave: WaveBitmask>(
     tileset.connect(beach, beach, &Axis::ALL);
     tileset.connect(beach, grass, &Axis::ALL);
     tileset.connect(grass, grass, &Axis::ALL);
+    for _ in 0..(n - 1) {
+        for _ in 0..8 {
+            tileset.add(0.0);
+        }
+    }
 
     let mut rng = SmallRng::from_os_rng();
 
@@ -43,11 +49,11 @@ fn benchmark_wave_size<Wave: WaveBitmask>(
 
 fn benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("wfc");
-    benchmark_wave_size::<u8>(&mut group);
-    benchmark_wave_size::<u16>(&mut group);
-    benchmark_wave_size::<u32>(&mut group);
-    benchmark_wave_size::<u64>(&mut group);
-    benchmark_wave_size::<u128>(&mut group);
+    benchmark_wave_size::<u8>(&mut group, 1);
+    benchmark_wave_size::<u16>(&mut group, 2);
+    benchmark_wave_size::<u32>(&mut group, 4);
+    benchmark_wave_size::<u64>(&mut group, 8);
+    benchmark_wave_size::<u128>(&mut group, 16);
 }
 
 criterion_group!(benches, benchmark);
