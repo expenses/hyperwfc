@@ -208,10 +208,7 @@ fn tile_list_from_wave(wave: &[u64], wave_size: usize, tile_list: &mut Vec<u8>) 
     }
 }
 
-pub trait Direction: Clone + Sized + Send
-where
-    Self: 'static,
-{
+pub trait Direction: Sized + 'static {
     const ALL: &'static [Self];
     fn as_index(&self) -> usize;
     fn apply(
@@ -296,7 +293,6 @@ impl<const WAVE_SIZE: usize> Tile<WAVE_SIZE> {
 }
 
 /// Stores tile connections and their probabilities.
-#[derive(Clone)]
 pub struct Tileset<Dir: Direction, const WAVE_SIZE: usize = 4> {
     tiles: Vec<Tile<WAVE_SIZE>>,
     probabilities: Vec<f32>,
@@ -309,6 +305,16 @@ impl<Dir: Direction, const WAVE_SIZE: usize> Default for Tileset<Dir, WAVE_SIZE>
             tiles: Default::default(),
             probabilities: Default::default(),
             _phantom: Default::default(),
+        }
+    }
+}
+
+impl<Dir: Direction, const WAVE_SIZE: usize> Clone for Tileset<Dir, WAVE_SIZE> {
+    fn clone(&self) -> Self {
+        Self {
+            tiles: self.tiles.clone(),
+            probabilities: self.probabilities.clone(),
+            _phantom: self._phantom,
         }
     }
 }
@@ -500,7 +506,7 @@ struct ScratchData<const WAVE_SIZE: usize> {
 
 /// The main WFC solver
 #[derive(Clone)]
-pub struct Wfc<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> {
+pub struct Wfc<Dir: Direction, E: Entropy, const WAVE_SIZE: usize = 4> {
     tiles: Vec<Tile<WAVE_SIZE>>,
     probabilities: Vec<f32>,
     state: State<E, WAVE_SIZE>,
