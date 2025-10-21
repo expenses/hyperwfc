@@ -6,7 +6,7 @@ use std::hash::Hash;
 /// Waves that have many possible states have high entropy, while waves that have less have lower entropy
 pub trait Entropy: Default + Send + Clone {
     type Type: Ord + Clone + Copy + Default + Hash + Send;
-    fn calculate(probabilities: &[f32], wave: &[u64]) -> Self::Type;
+    fn calculate(&mut self, probabilities: &[f32], wave: &[u64]) -> Self::Type;
 }
 
 /// Use the shannon entropy calculation where the probablility of the
@@ -18,7 +18,7 @@ impl Entropy for ShannonEntropy {
     type Type = OrderedFloat<f32>;
 
     #[inline]
-    fn calculate(probabilities: &[f32], wave: &[u64]) -> Self::Type {
+    fn calculate(&mut self, probabilities: &[f32], wave: &[u64]) -> Self::Type {
         let mut sum = 0.0;
         for (_, &prob) in probabilities
             .iter()
@@ -41,7 +41,7 @@ impl Entropy for LinearEntropy {
     type Type = u8;
 
     #[inline]
-    fn calculate(_probabilities: &[f32], wave: &[u64]) -> Self::Type {
+    fn calculate(&mut self, _probabilities: &[f32], wave: &[u64]) -> Self::Type {
         wave::count_ones(wave) as _
     }
 }

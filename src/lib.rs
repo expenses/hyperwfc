@@ -247,17 +247,20 @@ impl<Dir: Direction, const WAVE_SIZE: usize> Tileset<Dir, WAVE_SIZE> {
 struct State<E: Entropy, const WAVE_SIZE: usize> {
     array: Vec<[u64; WAVE_SIZE]>,
     entropy_to_indices: SetQueue<u32, Reverse<<E as Entropy>::Type>>,
+    entropy: E,
 }
 
 impl<E: Entropy, const WAVE_SIZE: usize> State<E, WAVE_SIZE> {
     fn new(initial_wave: [u64; WAVE_SIZE], size: usize, probabilities: &[f32]) -> Self {
         let set = IndexSet::new_from_vec((0..size as u32).collect());
         let mut entropy_to_indices = SetQueue::default();
-        entropy_to_indices.insert_set(Reverse(E::calculate(probabilities, &initial_wave)), set);
+        let mut entropy = E::default();
+        entropy_to_indices.insert_set(Reverse(entropy.calculate(probabilities, &initial_wave)), set);
 
         State {
             array: vec![initial_wave; size],
             entropy_to_indices,
+            entropy
         }
     }
 }
@@ -451,7 +454,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
                 let _val = self
                     .state
                     .entropy_to_indices
-                    .remove(Reverse(E::calculate(&self.probabilities, &old)), &index);
+                    .remove(Reverse(self.state.entropy.calculate(&self.probabilities, &old)), &index);
                 debug_assert!(_val);
             }
 
@@ -464,7 +467,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
                 let _val = self
                     .state
                     .entropy_to_indices
-                    .insert(Reverse(E::calculate(&self.probabilities, &new)), index);
+                    .insert(Reverse(self.state.entropy.calculate(&self.probabilities, &new)), index);
                 debug_assert!(_val);
             }
 
