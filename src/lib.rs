@@ -306,7 +306,7 @@ impl<const WAVE_SIZE: usize> Tile<WAVE_SIZE> {
 }
 
 /// Stores tile connections and their probabilities.
-pub struct Tileset<Dir: Direction, const WAVE_SIZE: usize = 4> {
+pub struct Tileset<Dir, const WAVE_SIZE: usize = 4> {
     tiles: Vec<Tile<WAVE_SIZE>>,
     probabilities: Vec<f32>,
     _phantom: std::marker::PhantomData<Dir>,
@@ -398,6 +398,7 @@ impl<Dir: Direction, const WAVE_SIZE: usize> Tileset<Dir, WAVE_SIZE> {
         size: (u32, u32, u32),
         array: &[[u64; WAVE_SIZE]],
     ) -> Wfc<Dir, E, WAVE_SIZE> {
+        assert_eq!(size.0 * size.1 * size.2, array.len() as _);
         let mut wfc = self.into_wfc(size);
         wfc.collapse_initial_state(array);
         wfc
@@ -798,8 +799,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
             });
     }
 
-    #[cfg(test)]
-    fn all_collapsed(&self) -> bool {
+    pub fn all_collapsed(&self) -> bool {
         self.state
             .array
             .iter()
@@ -918,7 +918,8 @@ fn initial_state() {
     v[0] = 1 << sea | 1 << beach | 1 << grass;
     let mut state = [v; 9];
     assert_eq!(
-        tileset.clone()
+        tileset
+            .clone()
             .into_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
             .state
             .array,
@@ -942,7 +943,6 @@ fn initial_state() {
     assert_eq!(wfc.values()[4], sea as _);
     wfc.reset();
     assert_eq!(wfc.state.array, expected);
-    
 }
 
 #[test]
@@ -963,7 +963,8 @@ fn initial_state_2d() {
     let mut state = [v; 9];
     assert_eq!(
         tileset
-            .clone().into_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
+            .clone()
+            .into_wfc_with_initial_state::<LinearEntropy>((3, 3, 1), &state)
             .state
             .array,
         state
