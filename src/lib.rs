@@ -162,7 +162,7 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
                 sum += probabilities[tile as usize];
                 prefix_summed_probabilities.push(OrderedFloat(sum));
             }
-            let list_index = sample_prefix_sum(&prefix_summed_probabilities, rng);
+            let list_index = sample_prefix_sum(prefix_summed_probabilities, rng);
             let tile = potential_states[list_index];
 
             (index, tile)
@@ -208,7 +208,7 @@ fn tile_list_from_wave(wave: &[u64], wave_size: usize, tile_list: &mut Vec<u8>) 
     }
 }
 
-pub trait Direction: Clone + Sized
+pub trait Direction: Clone + Sized + Send
 where
     Self: 'static,
 {
@@ -291,7 +291,7 @@ impl<const WAVE_SIZE: usize> Tile<WAVE_SIZE> {
     }
 
     fn connect<D: Direction>(&mut self, other: usize, dir: &D) {
-        self.connections[dir.as_index()][other / 64] |= (1 << (other % 64));
+        self.connections[dir.as_index()][other / 64] |= 1 << (other % 64);
     }
 }
 
@@ -921,7 +921,7 @@ fn initial_state() {
             .array,
         state
     );
-    state[4][0] = (1 << sea);
+    state[4][0] = 1 << sea;
     #[rustfmt::skip]
     let expected = [
         7,3,7,
@@ -963,7 +963,7 @@ fn initial_state_2d() {
             .array,
         state
     );
-    state[4][0] = (1 << sea);
+    state[4][0] = 1 << sea;
     #[rustfmt::skip]
     let expected = [
         7,3,7,
