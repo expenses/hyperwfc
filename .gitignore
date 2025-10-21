@@ -1,3 +1,10 @@
 /target
 /result
 old_python_stuff
+*.usdc
+*.usda
+*.hdr
+*.blend
+*.blend1
+*.bin
+perf.data*
