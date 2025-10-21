@@ -21,7 +21,7 @@ fn benchmark_wave_size<const WAVE_SIZE: usize>(
 
     let mut rng = SmallRng::from_os_rng();
 
-    for i in [5, 10, 25, 50, 100, 250, 500, 1000, 2000].iter() {
+    for i in [5, 10, 50, 100, 500, 1000].iter() {
         group.bench_with_input(BenchmarkId::new(format!("{}_shannon", n), i), i, |b, &i| {
             b.iter(|| {
                 let mut wfc = tileset.create_wfc::<ShannonEntropy>((i, 100, 1));
