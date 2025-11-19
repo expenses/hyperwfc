@@ -24,13 +24,15 @@ fn benchmark_wave_size<const WAVE_SIZE: usize>(
     for i in [5, 10, 50, 100, 500, 1000].iter() {
         group.bench_with_input(BenchmarkId::new(format!("{}_shannon", n), i), i, |b, &i| {
             b.iter(|| {
-                let mut wfc = tileset.create_wfc::<ShannonEntropy>((i, 100, 1));
+                let mut wfc = tileset.clone().into_wfc::<ShannonEntropy>((i, 100, 1));
                 wfc.collapse_all(&mut rng)
             })
         });
         group.bench_with_input(BenchmarkId::new(format!("{}_linear", n), i), i, |b, &i| {
             b.iter(|| {
-                let mut wfc = tileset.create_wfc::<LinearEntropy>((i, 100, 1));
+                let mut wfc = tileset
+                    .clone()
+                    .into_wfc::<entropy::LinearEntropy>((i, 100, 1));
                 wfc.collapse_all(&mut rng)
             })
         });

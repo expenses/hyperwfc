@@ -12,112 +12,14 @@ use std::hash::Hash;
 #[cfg(feature = "rayon")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-#[inline]
-fn count_ones(wave: &[u64]) -> u32 {
-    wave.iter().map(|section| section.count_ones()).sum()
-}
+pub mod directions;
+pub mod entropy;
+mod indexset;
+pub mod wave;
 
-#[inline]
-fn trailing_zeros(wave: &[u64]) -> u32 {
-    let mut sum = 0;
-    for section in wave.iter() {
-        let trailing_zeros = section.trailing_zeros();
-        sum += trailing_zeros;
-        if trailing_zeros != 64 {
-            break;
-        }
-    }
-    sum
-}
-
-#[inline]
-fn wave_contains(wave: &[u64], bit: u8) -> bool {
-    wave[(bit / 64) as usize] >> ((bit % 64) as usize) & 1 != 0
-}
-
-// Custom IndexSet implementation. Mirrors `indexmap::IndexSet`
-// but is a bit faster.
-#[derive(Clone)]
-struct IndexSet<T> {
-    values: Vec<T>,
-    indices: hashbrown::HashTable<u32>,
-}
-
-impl<T> Default for IndexSet<T> {
-    fn default() -> Self {
-        Self {
-            values: Default::default(),
-            indices: Default::default(),
-        }
-    }
-}
-
-impl<T: Hash + Eq + Clone + Debug> IndexSet<T> {
-    fn new_from_vec(values: Vec<T>) -> Self {
-        let mut indices = hashbrown::HashTable::with_capacity(values.len());
-
-        for (index, value) in values.iter().cloned().enumerate() {
-            use std::hash::BuildHasher;
-            let hasher = FnvBuildHasher::default();
-            // Only used when resizing
-            let hasher_fn = |_: &u32| unreachable!();
-            indices.insert_unique(hasher.hash_one(&value), index as u32, hasher_fn);
-        }
-
-        Self { values, indices }
-    }
-
-    fn insert(&mut self, value: T) -> bool {
-        use std::hash::BuildHasher;
-        let hasher = FnvBuildHasher::default();
-
-        let index = self.values.len() as u32;
-
-        let hasher_fn =
-            |&val: &u32| unsafe { hasher.hash_one(self.values.get_unchecked(val as usize)) };
-
-        match self
-            .indices
-            .entry(hasher.hash_one(&value), |other| *other == index, hasher_fn)
-        {
-            hashbrown::hash_table::Entry::Vacant(slot) => {
-                slot.insert(index);
-                self.values.push(value);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn swap_remove(&mut self, value: &T) -> bool {
-        use std::hash::BuildHasher;
-        let hasher = FnvBuildHasher::default();
-        // Search in the table for the value
-        let index = if let Ok(entry) = self
-            .indices
-            .find_entry(hasher.hash_one(value), |&other| unsafe {
-                self.values.get_unchecked(other as usize) == value
-            }) {
-            let (index, _) = entry.remove();
-            index
-        } else {
-            return false;
-        };
-        // Swap remove it.
-        self.values.swap_remove(index as _);
-        // If the vec still has items, we need to change it's value.
-        if let Some(value) = self.values.get(index as usize) {
-            use std::hash::BuildHasher;
-            let hasher = FnvBuildHasher::default();
-            if let Ok(entry) = self.indices.find_entry(hasher.hash_one(value), |&other| {
-                other == self.values.len() as u32
-            }) {
-                *entry.into_mut() = index;
-            }
-        }
-        true
-    }
-}
+pub use directions::{Axis, Direction};
+pub use entropy::{Entropy, ShannonEntropy};
+use indexset::IndexSet;
 
 // A priority queue of items where some items have the same priority
 // and can be randomly picked.
@@ -143,7 +45,7 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
         while let Some(priority) = self.queue.peek_mut() {
             if let hash_map::Entry::Occupied(occupied_entry) = self.sets.entry(*priority) {
                 let set = occupied_entry.get();
-                if let Some(item) = set.values.choose(rng) {
+                if let Some(item) = set.values().choose(rng) {
                     return Some(item.clone());
                 } else {
                     occupied_entry.remove();
@@ -202,91 +104,15 @@ impl<T: Hash + Eq + Clone + Debug, P: Copy + Ord + Hash> SetQueue<T, P> {
     }
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug)]
-pub enum Axis {
-    X,
-    Y,
-    Z,
-    NegX,
-    NegY,
-    NegZ,
-}
-
 #[inline]
 fn tile_list_from_wave(wave: &[u64], wave_size: usize, tile_list: &mut Vec<u8>) {
     tile_list.clear();
-    for i in (0..wave_size).filter(|&i| wave_contains(wave, i as _)) {
+    for i in (0..wave_size).filter(|&i| wave::contains(wave, i as _)) {
         tile_list.push(i as _);
     }
 }
 
-pub trait Direction: Sized + 'static {
-    const ALL: &'static [Self];
-    fn as_index(&self) -> usize;
-    fn apply(
-        &self,
-        x: u32,
-        y: u32,
-        z: u32,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) -> Option<(u32, u32, u32)>;
-    fn opposite(&self) -> Self;
-}
-
-impl Direction for Axis {
-    const ALL: &[Self] = &[
-        Self::X,
-        Self::Y,
-        Self::Z,
-        Self::NegX,
-        Self::NegY,
-        Self::NegZ,
-    ];
-
-    #[inline]
-    fn as_index(&self) -> usize {
-        *self as usize
-    }
-
-    fn opposite(&self) -> Self {
-        match self {
-            Self::X => Self::NegX,
-            Self::Y => Self::NegY,
-            Self::Z => Self::NegZ,
-            Self::NegX => Self::X,
-            Self::NegY => Self::Y,
-            Self::NegZ => Self::Z,
-        }
-    }
-
-    #[inline]
-    fn apply(
-        &self,
-        mut x: u32,
-        mut y: u32,
-        mut z: u32,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) -> Option<(u32, u32, u32)> {
-        match self {
-            Self::X if x < width - 1 => x += 1,
-            Self::Y if y < height - 1 => y += 1,
-            Self::Z if z < depth - 1 => z += 1,
-            Self::NegX if x > 0 => x -= 1,
-            Self::NegY if y > 0 => y -= 1,
-            Self::NegZ if z > 0 => z -= 1,
-            _ => return None,
-        }
-
-        Some((x, y, z))
-    }
-}
-
-// Specifies connections along the 6 axis (+/-, x/y/z)
+// Specifies connections
 #[repr(transparent)]
 #[derive(Debug, Clone)]
 struct Tile<const WAVE_SIZE: usize> {
@@ -301,7 +127,7 @@ impl<const WAVE_SIZE: usize> Tile<WAVE_SIZE> {
     }
 
     fn connect<D: Direction>(&mut self, other: usize, dir: &D) {
-        self.connections[dir.as_index()][other / 64] |= 1 << (other % 64);
+        wave::set_one(&mut self.connections[dir.as_index()], other);
     }
 }
 
@@ -398,7 +224,7 @@ impl<Dir: Direction, const WAVE_SIZE: usize> Tileset<Dir, WAVE_SIZE> {
         size: (u32, u32, u32),
         array: &[[u64; WAVE_SIZE]],
     ) -> Wfc<Dir, E, WAVE_SIZE> {
-        assert_eq!(size.0 * size.1 * size.2, array.len() as _);
+        assert_eq!(size.0 * size.1 * size.2, array.len() as u32);
         let mut wfc = self.into_wfc(size);
         wfc.collapse_initial_state(array);
         wfc
@@ -413,66 +239,7 @@ impl<Dir: Direction, const WAVE_SIZE: usize> Tileset<Dir, WAVE_SIZE> {
     // Get the initial wave value
     #[inline]
     pub fn initial_wave(&self) -> [u64; WAVE_SIZE] {
-        initial_wave(self.tiles.len())
-    }
-}
-
-#[inline]
-fn initial_wave<const WAVE_SIZE: usize>(mut len: usize) -> [u64; WAVE_SIZE] {
-    let mut wave = [0; WAVE_SIZE];
-    for section in wave.iter_mut() {
-        if len >= 64 {
-            *section = !0;
-            len -= 64;
-        } else {
-            *section = (!0) >> (64 - len);
-            break;
-        }
-    }
-    wave
-}
-
-/// A method of determining entropy.
-/// Waves that have many possible states have high entropy, while waves that have less have lower entropy
-pub trait Entropy: Default + Send + Clone {
-    type Type: Ord + Clone + Copy + Default + Hash + Send;
-    fn calculate(probabilities: &[f32], wave: &[u64]) -> Self::Type;
-}
-
-/// Use the shannon entropy calculation where the probablility of the
-/// remaining possible states matters.
-#[derive(Clone, Default)]
-pub struct ShannonEntropy;
-
-impl Entropy for ShannonEntropy {
-    type Type = OrderedFloat<f32>;
-
-    #[inline]
-    fn calculate(probabilities: &[f32], wave: &[u64]) -> Self::Type {
-        let mut sum = 0.0;
-        for (_, &prob) in probabilities
-            .iter()
-            .enumerate()
-            .filter(|&(i, prob)| *prob > 0.0 && wave_contains(wave, i as _))
-        {
-            sum -= prob * prob.log2();
-        }
-        OrderedFloat(sum)
-    }
-}
-
-/// Simply use the number of remaining states in the wave for entropy.
-///
-/// Doesn't take probability of tiles into account. Slightly faster than shannon entryopy.
-#[derive(Clone, Default)]
-pub struct LinearEntropy;
-
-impl Entropy for LinearEntropy {
-    type Type = u8;
-
-    #[inline]
-    fn calculate(_probabilities: &[f32], wave: &[u64]) -> Self::Type {
-        count_ones(wave) as _
+        wave::initial(self.tiles.len())
     }
 }
 
@@ -503,7 +270,6 @@ struct ScratchData<const WAVE_SIZE: usize> {
 }
 
 /// The main WFC solver
-#[derive(Clone)]
 pub struct Wfc<Dir: Direction, E: Entropy, const WAVE_SIZE: usize = 4> {
     tiles: Vec<Tile<WAVE_SIZE>>,
     probabilities: Vec<f32>,
@@ -515,11 +281,26 @@ pub struct Wfc<Dir: Direction, E: Entropy, const WAVE_SIZE: usize = 4> {
     _phantom: std::marker::PhantomData<Dir>,
 }
 
+impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Clone for Wfc<Dir, E, WAVE_SIZE> {
+    fn clone(&self) -> Self {
+        Self {
+            tiles: self.tiles.clone(),
+            probabilities: self.probabilities.clone(),
+            state: self.state.clone(),
+            initial_state: self.initial_state.clone(),
+            width: self.width,
+            height: self.height,
+            scratch_data: self.scratch_data.clone(),
+            _phantom: Default::default(),
+        }
+    }
+}
+
 impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> {
     /// Get the initial wave value
     #[inline]
     pub fn initial_wave(&self) -> [u64; WAVE_SIZE] {
-        initial_wave(self.tiles.len())
+        wave::initial(self.tiles.len())
     }
 
     /// Partially collapse the initial state based on provided input.
@@ -594,49 +375,6 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
         )
     }
 
-    /// Like `collapse_all_reset_on_contradiction` but uses rayon for parallelism.
-    #[cfg(feature = "rayon")]
-    #[inline]
-    pub fn collapse_all_reset_on_contradiction_par<R: Rng>(&mut self, mut rng: &mut R) -> u32 {
-        use rand::{SeedableRng, rngs::SmallRng};
-
-        let states: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| (self.clone(), SmallRng::from_rng(&mut rng)))
-            .collect();
-
-        let other_attempts = AtomicU32::new(0);
-
-        let (wfc, local_attempts) =
-            find_any_with_early_stop(states, |(mut wfc, mut rng), stop_flag| {
-                let mut attempts = 1;
-                while let Some((index, tile)) = wfc.select_from_lowest_entropy(&mut rng) {
-                    if stop_flag.load(Ordering::Relaxed) {
-                        other_attempts.fetch_add(attempts, Ordering::Relaxed);
-                        return None;
-                    }
-                    if wfc.collapse(index, tile) {
-                        if attempts % 1000 == 0 {
-                            println!("{}", attempts);
-                        }
-                        wfc.reset();
-                        attempts += 1
-                    }
-                }
-                Some((wfc, attempts))
-            })
-            .unwrap();
-
-        let total_attempts = local_attempts + other_attempts.load(Ordering::Relaxed);
-
-        println!(
-            "Found after {} attempts, ({} thread local)",
-            total_attempts, local_attempts,
-        );
-
-        *self = wfc;
-        total_attempts
-    }
-
     /// Like `collapse_all` but resets the state upon a contradiction. Returns the number of attempts it took.
     #[inline]
     pub fn collapse_all_reset_on_contradiction<R: Rng>(&mut self, rng: &mut R) -> u32 {
@@ -675,7 +413,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
     #[inline]
     pub fn collapse(&mut self, index: u32, tile: u8) -> bool {
         let mut wave = [0; WAVE_SIZE];
-        wave[(tile as usize) / 64] = 1 << (tile as usize % 64);
+        wave::set_one(&mut wave, tile as usize);
         self.partial_collapse(index, wave)
     }
 
@@ -709,7 +447,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
                 continue;
             }
 
-            if count_ones(&old) > 1 {
+            if wave::count_ones(&old) > 1 {
                 let _val = self
                     .state
                     .entropy_to_indices
@@ -722,7 +460,7 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
                 continue;
             }
 
-            if count_ones(&new) > 1 {
+            if wave::count_ones(&new) > 1 {
                 let _val = self
                     .state
                     .entropy_to_indices
@@ -791,8 +529,8 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
             .iter()
             .zip(values)
             .for_each(|(wave, value)| {
-                *value = if count_ones(wave) == 1 {
-                    trailing_zeros(wave) as u8
+                *value = if wave::count_ones(wave) == 1 {
+                    wave::trailing_zeros(wave) as u8
                 } else {
                     u8::MAX
                 }
@@ -803,16 +541,52 @@ impl<Dir: Direction, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> 
         self.state
             .array
             .iter()
-            .all(|&value| count_ones(&value) == 1)
+            .all(|&value| wave::count_ones(&value) == 1)
     }
 }
 
-#[inline]
-fn sample_prefix_sum<R: rand::Rng>(prefix_sum: &[OrderedFloat<f32>], rng: &mut R) -> usize {
-    let num = rng.random_range(0.0..=prefix_sum[prefix_sum.len() - 1].0);
-    match prefix_sum.binary_search(&OrderedFloat(num)) {
-        Ok(index) => index,
-        Err(index) => index,
+#[cfg(feature = "rayon")]
+impl<Dir: Direction + Send, E: Entropy, const WAVE_SIZE: usize> Wfc<Dir, E, WAVE_SIZE> {
+    /// Like `collapse_all_reset_on_contradiction` but uses rayon for parallelism.
+    #[inline]
+    pub fn collapse_all_reset_on_contradiction_par<R: Rng>(&mut self, mut rng: &mut R) -> u32 {
+        use rand::{SeedableRng, rngs::SmallRng};
+
+        let states: Vec<_> = (0..rayon::current_num_threads())
+            .map(|_| (self.clone(), SmallRng::from_rng(&mut rng)))
+            .collect();
+
+        let other_attempts = AtomicU32::new(0);
+
+        let (wfc, local_attempts) =
+            find_any_with_early_stop(states, |(mut wfc, mut rng), stop_flag| {
+                let mut attempts = 1;
+                while let Some((index, tile)) = wfc.select_from_lowest_entropy(&mut rng) {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        other_attempts.fetch_add(attempts, Ordering::Relaxed);
+                        return None;
+                    }
+                    if wfc.collapse(index, tile) {
+                        if attempts % 1000 == 0 {
+                            println!("{}", attempts);
+                        }
+                        wfc.reset();
+                        attempts += 1
+                    }
+                }
+                Some((wfc, attempts))
+            })
+            .unwrap();
+
+        let total_attempts = local_attempts + other_attempts.load(Ordering::Relaxed);
+
+        println!(
+            "Found after {} attempts, ({} thread local)",
+            total_attempts, local_attempts,
+        );
+
+        *self = wfc;
+        total_attempts
     }
 }
 
@@ -830,6 +604,15 @@ fn find_any_with_early_stop<
     iterator.into_par_iter().find_map_any(|item| {
         func(item, &stop_flag).inspect(|_| stop_flag.store(true, Ordering::Relaxed))
     })
+}
+
+#[inline]
+fn sample_prefix_sum<R: rand::Rng>(prefix_sum: &[OrderedFloat<f32>], rng: &mut R) -> usize {
+    let num = rng.random_range(0.0..=prefix_sum[prefix_sum.len() - 1].0);
+    match prefix_sum.binary_search(&OrderedFloat(num)) {
+        Ok(index) => index,
+        Err(index) => index,
+    }
 }
 
 #[cfg(test)]
@@ -860,11 +643,7 @@ fn normal() {
     assert!(
         wfc.all_collapsed(),
         "failed to collapse: {:?}",
-        &wfc.state
-            .array
-            .iter()
-            .map(|v| count_ones(v))
-            .collect::<Vec<_>>()
+        &wfc.values()
     );
 }
 
@@ -893,13 +672,14 @@ fn normal_2d() {
     assert!(
         wfc.all_collapsed(),
         "failed to collapse: {:?}",
-        &wfc.state
-            .array
-            .iter()
-            .map(|v| count_ones(v))
-            .collect::<Vec<_>>()
+        &wfc.values()
     );
 }
+
+#[cfg(test)]
+use directions::Axis2D;
+#[cfg(test)]
+use entropy::LinearEntropy;
 
 #[test]
 fn initial_state() {
@@ -1009,15 +789,7 @@ fn verticals() {
 
     assert!(!wfc.all_collapsed());
     assert!(!wfc.collapse_all(&mut rng));
-    assert!(
-        wfc.all_collapsed(),
-        "{:?}",
-        &wfc.state
-            .array
-            .iter()
-            .map(|v| count_ones(v))
-            .collect::<Vec<_>>()
-    );
+    assert!(wfc.all_collapsed(), "{:?}", &wfc.values());
     let _v = wfc.values();
     //panic!("{:?}",v);
 }
@@ -1073,7 +845,7 @@ fn broken() {
         if wfc.collapse_all(&mut rng) {
             assert!(!wfc.all_collapsed());
             // Make sure that at least one state has collapsed properly (aka that the error hasn't spread).
-            assert!(wfc.state.array.iter().any(|&v| count_ones(&v) == 1));
+            assert!(wfc.state.array.iter().any(|&v| wave::count_ones(&v) == 1));
             break;
         }
     }
@@ -1107,57 +879,9 @@ fn broken_2d() {
         if wfc.collapse_all(&mut rng) {
             assert!(!wfc.all_collapsed());
             // Make sure that at least one state has collapsed properly (aka that the error hasn't spread).
-            assert!(wfc.state.array.iter().any(|&v| count_ones(&v) == 1));
+            assert!(wfc.state.array.iter().any(|&v| wave::count_ones(&v) == 1));
             break;
         }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy)]
-enum Axis2D {
-    X,
-    Y,
-    NegX,
-    NegY,
-}
-
-#[cfg(test)]
-impl Direction for Axis2D {
-    const ALL: &[Self] = &[Self::X, Self::Y, Self::NegX, Self::NegY];
-
-    fn as_index(&self) -> usize {
-        *self as usize
-    }
-
-    fn opposite(&self) -> Self {
-        match self {
-            Self::X => Self::NegX,
-            Self::Y => Self::NegY,
-            Self::NegX => Self::X,
-            Self::NegY => Self::Y,
-        }
-    }
-
-    #[inline]
-    fn apply(
-        &self,
-        mut x: u32,
-        mut y: u32,
-        z: u32,
-        width: u32,
-        height: u32,
-        _depth: u32,
-    ) -> Option<(u32, u32, u32)> {
-        match self {
-            Self::X if x < width - 1 => x += 1,
-            Self::Y if y < height - 1 => y += 1,
-            Self::NegX if x > 0 => x -= 1,
-            Self::NegY if y > 0 => y -= 1,
-            _ => return None,
-        }
-
-        Some((x, y, z))
     }
 }
 
